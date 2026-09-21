@@ -106,6 +106,24 @@ cycle or delay end already in the database and continues that truck's
 timeline forward from there — no overlaps with history. Press Ctrl+C to
 stop.
 
+## Data model
+
+- **Trucks**: the fleet (12), with capacity and empty mass in tonnes.
+- **Loaders**: the loaders (3: L1, L2, L3).
+- **Destinations**: the three dump points (ROM pad and Crusher are Ore, Waste
+  dump is Waste).
+- **Routes**: every loader x destination pair (9), each with its own distance
+  and grade.
+- **Cycles**: one row per completed load -> haul -> dump -> return loop, with
+  the truck's route and loader for that cycle.
+- **Delays**: one row per period a truck is out of production, planned or
+  unplanned, with a reason.
+- **Schedules**: one row per truck per shift, built by the scheduler before
+  the shift starts: an assigned route/loader with planned cycles and tonnes,
+  or a reason the truck is unavailable.
+- **vw_CycleDetail** / **vw_ScheduleDetail**: pre-joined views with names
+  instead of ids, for downstream consumers to query directly.
+
 ## Glossary
 
 ### Equipment
@@ -114,8 +132,21 @@ stop.
 
 **Loader**: A machine (shovel or excavator) that fills trucks at the pit.
 
-**Route**: A fixed path from the pit to one dump point, with a distance and
-grade.
+**Destination**: A place trucks dump material: ROM pad, waste dump or
+crusher. Each has a material, Ore or Waste.
+
+**Route**: The path from one loader to one destination, with its own
+distance and grade. Every loader-destination pair is a route.
+
+### Planning
+
+**Schedule**: One truck's assignment to a loader and route for one shift,
+with planned cycles and tonnes, or a reason the truck is unavailable. Made
+before the shift from textbook rates and never changed during it.
+
+**Book rate**: The textbook cycle time or tonnes per hour for a route,
+assuming full payload and no known problems. Schedules are built from book
+rates.
 
 ### Time
 
@@ -147,20 +178,64 @@ hours" and similar windows count back from here, never from the wall clock.
 cycle time). Below 1, loaders wait for trucks. Above 1, trucks queue for
 loaders.
 
+## Scheduler
+
+Before every shift (06:00 Day, 18:00 Night, mine time), the scheduler builds
+one `Schedules` row per truck:
+
+- **Book rate.** Each route's book cycle time is computed from its distance
+  and grade at full payload (220 t), using the same speed model as the
+  simulator but without the waste-dump slow ramp and without any
+  truck-specific noise (mean load 3.8 min, dump 1.2 min, queue 0.8 min).
+- **Availability.** A truck is unavailable for the shift (a reason, no
+  route/loader/plan) if, at shift start, it's in a Major breakdown, in
+  scheduled maintenance covering the whole shift, or in any other delay
+  covering the whole shift. Otherwise its available minutes are 720 minus
+  known planned delays overlapping the shift (refuel, crib, handover,
+  scheduled maintenance) — unplanned delays (Breakdown, Tyre, Major
+  breakdown) starting mid-shift aren't known to the scheduler in advance.
+- **Assignment is deliberately random**, by design: each available truck
+  gets a uniformly random route out of the 9, with one guard — if no truck
+  landed on a route into the Crusher, one random truck is moved to a random
+  Crusher route. No other logic. The resulting schedules are intentionally
+  silly (many trucks stacked on one loader, long off-home hauls) so Project
+  2 has something to optimise against.
+- **Plan.** PlannedCycles = available minutes / book cycle time; PlannedTonnes
+  = PlannedCycles x 220.
+- Cycles always follow the truck's schedule for the shift they start in — no
+  more random per-cycle loader/route picking. A truck that goes unavailable
+  mid-shift just leaves its plan unfulfilled; one that recovers mid-shift
+  stays idle until the next shift (no mid-shift reassignment).
+
+**Targets** (book tonnes if 4 trucks ran each destination's home route for a
+full 720-minute shift, using the book rates above, which exclude the
+waste-dump slow ramp): ROM pad (L1, 3.2 km/6%, book cycle 19.3 min) ~32,800
+t/shift; Waste dump (L2, 4.8 km/8%, book cycle 28.3 min) ~22,400 t/shift;
+Crusher (L3, 2.1 km/5%, book cycle 14.3 min) ~44,400 t/shift. These live in
+code only (no `ShiftTargets` table) since they're a fixed function of the
+home routes' book rates.
+
 ## Planted problems
 
-The generator deliberately embeds four anomalies for the dashboard to
-surface. None of them are stored as flags in the database — they only show
-up in the numbers.
+The generator deliberately embeds anomalies for the dashboard to surface.
+None of them are stored as flags in the database — they only show up in the
+numbers.
 
 1. **Truck T07 underloads.** It carries about 80% of its capacity per cycle
-   instead of the fleet's usual ~97%.
-2. **Route 2 ("Pit to waste dump") runs slow.** Haul times are about 15%
-   longer than the speed model predicts for its distance and grade.
+   instead of the fleet's usual ~97%. Because load time scales with payload
+   share, T07 also completes *more* cycles per hour than average — it just
+   moves fewer tonnes per hour doing it.
+2. **Every route into the waste dump runs slow.** Haul times on those three
+   routes are about 15% longer than the speed model predicts (a ramp, not a
+   per-route database flag).
 3. **Shift-change queueing.** Queue times rise fleet-wide for cycles that
    start in the 06:00 or 18:00 hour.
 4. **Loader queue spikes.** Roughly once per loader per day, queueing at
    that loader runs high (mean around 5 minutes) for 30–90 minutes.
+5. **Silly schedules, by design.** The scheduler assigns routes randomly
+   (see above), so which trucks are on which loader/route each shift is
+   itself a "planted problem" for a later optimiser, not noise to explain
+   away.
 
 ## Numbers
 
@@ -169,26 +244,54 @@ window runs from `days` ago up to *now*, re-running the same seed later
 shifts the end of the window and gives slightly different totals — the
 pattern is reproducible, the exact row count isn't:
 
-- Cycles: 21,260. Delays: 2,372.
-- Average cycle time overall: 22.1 minutes.
-  - Pit to crusher: 14.7 min. Pit to ROM pad: 19.7 min. Pit to waste dump:
-    30.8 min (Route 2, the planted slow route).
-- Average payload: ~97.0% of capacity fleet-wide; T07 alone averages 80.1%.
-- Average queue by hour: ~0.96 min for other hours; 4.76 min at 06:00 and
-  4.96 min at 18:00.
-- Peak hourly average queue per loader (spike visible): L1 8.8 min, L2 22.9
-  min, L3 12.4 min, against a non-spike baseline around 1 minute.
-- Delay counts and total minutes by reason: Crib break 746 (22,453 min),
-  Refuel 744 (11,178 min), Shift change handover 744 (11,172 min), Scheduled
-  maintenance 47 (11,101 min), Breakdown 84 (9,599 min), Tyre 7 (405 min).
-- Match factor from this data: (12 trucks × 3.79 min avg load) / (3 loaders ×
-  22.06 min avg cycle) ≈ 0.69 — loaders are the more idle resource on
+- Cycles: 18,220. Delays: 2,377. Schedules: 756 (12 trucks x 63 shifts).
+- Average cycle time by route: L1 to ROM pad 19.4 min, L1 to Waste dump 37.3
+  min, L1 to Crusher 20.6 min, L2 to ROM pad 27.1 min, L2 to Waste dump 30.4
+  min, L2 to Crusher 27.4 min, L3 to ROM pad 25.2 min, L3 to Waste dump 35.9
+  min, L3 to Crusher 14.4 min. By destination: ROM pad 23.6 min, Waste dump
+  34.1 min (the planted slow ramp), Crusher 19.4 min.
+- Average payload: ~95.5% of capacity fleet-wide; T07 alone averages 80.2%.
+  T07 completes more cycles per busy hour than the fleet average (2.46 vs.
+  2.42) but moves far fewer tonnes per hour (433 t vs. 508 t) — the
+  underload shows up as *faster, lighter* cycles, not fewer of them.
+- Average queue by hour: ~0.85-1.12 min for other hours; 4.58 min at 06:00
+  and 5.07 min at 18:00.
+- Peak hourly average queue per loader (spike visible): L1 10.5 min, L2 13.6
+  min, L3 18.3 min, against a non-spike baseline around 1 minute.
+- Delay counts and total minutes by reason: Crib break 742 (22,322 min),
+  Refuel 744 (11,197 min), Shift change handover 744 (11,056 min), Scheduled
+  maintenance 45 (10,695 min), Breakdown 86 (10,268 min), Tyre 10 (603 min),
+  Major breakdown 6 (16,380 min).
+- Unavailable schedule rows: 22, all reason "Major breakdown" (the only
+  delay type long/timed enough in this run to be active at a shift start).
+- Trucks per route per shift: min 1, avg 1.7, max 6 (a consequence of random
+  assignment across 9 routes for 12 trucks).
+- Crusher guard fired on 2 of the 63 shifts (the other 61 landed at least one
+  truck on a Crusher route by chance).
+- Plan vs. actual tonnes: 3,827,280 actual vs. 4,296,081 planned overall
+  (89.1%). By destination: ROM pad 92.7%, Crusher 89.3%, Waste dump 84.4%
+  (lowest, consistent with its planted slow ramp eating into realised
+  cycles).
+- Match factor from this data: (12 trucks x 3.73 min avg load) / (3 loaders x
+  24.82 min avg cycle) ≈ 0.60 — loaders are the more idle resource on
   average.
-- Fleet cycles per hour: ~29.5 (21,260 cycles over ~720 hours).
-- No overlapping cycles or delays were found for any truck.
-- Live mode at `--speed 10` for about 45 seconds (on an earlier run) inserted
-  69 cycles and 3 delays (roughly 90 cycles/minute at that speed), with zero
-  overlaps against the history data it continued from.
+- Fleet cycles per hour: ~24.5 (18,220 cycles over ~744 hours).
+- No overlapping cycles or delays were found for any truck; every cycle's
+  route matches its truck's schedule for that shift; no cycles were found
+  for a truck marked unavailable.
+- Live mode at `--speed 10`: the sim clock now starts at the *earliest*
+  per-truck latest-end time (previously the latest), which fixed a catch-up
+  burst — an earlier run had inserted 69 cycles in ~45 s. Two ~2-3 minute
+  runs against this history instead showed a ~2-2.5 minute warm-up with no
+  inserts (trucks whose own cursor was already ahead of the new, earlier sim
+  clock start simply aren't due yet), then bursty but order-of-magnitude
+  correct activity once the fleet's per-truck cursors converged (the
+  fleet-wide expected rate is ~4.1 cycles/real-minute at 10x; observed
+  windows ranged from 0 to ~13.6/min on these short samples). Zero overlaps
+  against the history data continued from. The test window didn't cross a
+  06:00/18:00 shift boundary, so schedule creation-on-crossing wasn't
+  directly observed; existing schedules for the current shift were
+  correctly reused (no new schedule rows were created or printed).
 
 ## Azure cost notes
 
