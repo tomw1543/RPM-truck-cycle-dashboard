@@ -1,0 +1,27 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# Node
+node_modules/
+dist/
+build/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.userosscache
+*.sln.docstates
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
