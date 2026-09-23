@@ -515,32 +515,28 @@ for the manual verification log). Findings:
   appear in live-generated rows, consistent with history's dispatch-idle
   pattern; some of the larger gaps include an intervening delay rather than
   pure idle, which is expected.
-- **Known issue found, not yet fixed:** a live run at higher speed
-  (`--speed 600`, chosen to force a 06:00 shift crossing within a few
-  minutes of wall time) confirmed the crossing happens and a `Schedules` row
-  gets created for the new shift (verified in the DB), but the process
-  crashed with `InvalidOperationException: The connection does not support
-  MultipleActiveResultSets` shortly after. Root cause: `OnScheduleCreated` in
-  `RunLiveAsync` is `async void` and unawaited, so when two trucks need a new
-  schedule at close to the same simulated instant (common right at a shift
-  boundary, when many trucks cross into the new shift together), its
-  fire-and-forget `InsertOneScheduleAsync` call can race with the main
-  loop's `InsertOneCycleAsync`/`InsertOneDelayAsync` on the same shared
-  `SqlConnection`, which isn't opened with MARS support. An unhandled
-  exception in an `async void` method crashes the whole process. This needs
-  a follow-up fix (e.g. await the schedule insert on the main loop, or give
-  it its own connection / serialize DB access) before live mode can be
-  trusted to run unattended across a shift boundary.
-- Also found (harmless, but real, not the ≤1s rounding artifact noted
-  above): `GetLatestEndPerTruckAsync`'s SQL computes a cycle's end time via
-  `DATEADD(MINUTE, CAST(... AS FLOAT), StartTime)`, and SQL Server truncates
-  a float minute argument to `DATEADD` instead of rounding it, so a live run
-  can resume a truck's timeline up to ~1 minute before its last historical
-  cycle actually ended, producing a small real overlap (observed: ~59
-  seconds) the first time that truck's live continuation fires. Cosmetic at
-  this scale, but worth fixing the same way `vw_CycleDetail`'s `EndTime`
-  formula already does (`DATEADD(SECOND, CAST(ROUND(minutes*60,0) AS INT),
-  StartTime)`).
+- A separate run at `--speed 600` (chosen to force a 06:00 shift crossing
+  within a couple of minutes of wall time) crossed the boundary cleanly: 11
+  of the 12 trucks got a new `Schedules` row for the shift at the same
+  simulated instant, and the process kept running for several more minutes
+  and several more simulated hours afterwards without error, inserting at
+  roughly 2.5 rows/second. (The twelfth truck's cursor had already advanced
+  past that particular shift during history generation, so live mode's
+  fresh per-truck cursor never revisited it - a pre-existing consequence of
+  live mode's just-in-time, per-truck schedule model, not a crash.) All
+  database writes on the shared connection - cycles, delays, and
+  just-in-time schedule creation - are awaited on the main loop in order, so
+  concurrent schedule creation at a shift boundary can't race another insert
+  on the same connection.
+- Live mode resumes each truck from its latest cycle/delay end computed with
+  the same second-precision rounding `vw_CycleDetail` uses
+  (`DATEADD(SECOND, CAST(ROUND(minutes*60,0) AS INT), StartTime)`), so a
+  resumed truck's first live cycle starts at or after its last historical
+  cycle actually ended, not up to a minute early.
+- An ordered self-join on `CycleId` per truck (each cycle's end vs. the next
+  cycle's start) shows a maximum 1-second overlap fleet-wide, consistent
+  with `StartTime DATETIME2(0)` rounding to whole seconds (see "Numbers"
+  above) - not a real double-booking.
 
 ## Azure cost notes
 

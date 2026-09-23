@@ -166,12 +166,18 @@ async Task RunLiveAsync()
     var scheduleLookup = new Dictionary<(int TruckId, DateOnly ShiftDate, string ShiftName), ScheduleRow>();
     await LoadExistingSchedulesAsync(conn, scheduleLookup);
 
-    async void OnScheduleCreated(ScheduleRow row)
+    // Schedules created while computing this tick's events are queued here rather than
+    // inserted immediately: TruckTimeline.Next() calls the schedule factory synchronously
+    // (it is not awaited), so a DB write from inside it would run concurrently with the
+    // main loop's own awaited inserts on the same shared, non-MARS SqlConnection. Queuing
+    // and draining the queue on the main loop keeps every write on this connection awaited
+    // and serialized. No async void anywhere in the live path.
+    var newlyCreatedSchedules = new List<ScheduleRow>();
+
+    void OnScheduleCreated(ScheduleRow row)
     {
         scheduleLookup[(row.TruckId, row.ShiftDate, row.ShiftName)] = row;
-        await InsertOneScheduleAsync(conn, row);
-        Console.WriteLine($"  schedule: {row.ShiftDate:yyyy-MM-dd} {row.ShiftName} truck {row.TruckId,2} -> " +
-            (row.UnavailableReason is { } reason ? $"unavailable ({reason})" : $"route {row.RouteId} ({row.PlannedCycles:0.0} planned cycles)"));
+        newlyCreatedSchedules.Add(row);
     }
 
     ScheduleRow GetOrCreateSchedule(int truckId, DateOnly shiftDate, string shiftName, DateTime shiftStart, DateTime shiftEnd, List<PendingDelay> knownDelays, DelayRow? lastDelay)
@@ -184,6 +190,17 @@ async Task RunLiveAsync()
         var row = Scheduler.BuildSingleTruckSchedule(fleet, truck, shiftStart, shiftEnd, shiftName, shiftDate, knownDelays, lastDelay, rng);
         OnScheduleCreated(row);
         return row;
+    }
+
+    async Task DrainNewSchedulesAsync()
+    {
+        foreach (var row in newlyCreatedSchedules)
+        {
+            await InsertOneScheduleAsync(conn, row);
+            Console.WriteLine($"  schedule: {row.ShiftDate:yyyy-MM-dd} {row.ShiftName} truck {row.TruckId,2} -> " +
+                (row.UnavailableReason is { } reason ? $"unavailable ({reason})" : $"route {row.RouteId} ({row.PlannedCycles:0.0} planned cycles)"));
+        }
+        newlyCreatedSchedules.Clear();
     }
 
     var timelines = fleet.Trucks.ToDictionary(
@@ -207,6 +224,10 @@ async Task RunLiveAsync()
                     pending[truck.Id] = new PendingEvent(ev, EndOf(ev));
                 }
             }
+
+            // Insert (awaited) any schedules the loop above just created, before any
+            // cycle/delay insert below - all writes on this connection stay serialized.
+            await DrainNewSchedulesAsync();
 
             var simClock = simClockStart + TimeSpan.FromTicks((long)((DateTime.UtcNow - wallStart).Ticks * speed));
 
@@ -535,7 +556,7 @@ async Task<Dictionary<int, DateTime?>> GetLatestEndPerTruckAsync(SqlConnection c
         SELECT TruckId, MAX(EndTime) AS LatestEnd
         FROM (
             SELECT TruckId,
-                   DATEADD(MINUTE, CAST(LoadMin + HaulMin + DumpMin + ReturnMin + QueueMin AS FLOAT), StartTime) AS EndTime
+                   DATEADD(SECOND, CAST(ROUND((LoadMin + HaulMin + DumpMin + ReturnMin + QueueMin) * 60, 0) AS INT), StartTime) AS EndTime
             FROM dbo.Cycles
             UNION ALL
             SELECT TruckId, EndTime FROM dbo.Delays
