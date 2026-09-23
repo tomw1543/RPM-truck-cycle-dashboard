@@ -3,11 +3,19 @@ namespace HaulCycle.Api.Kpi;
 /// <summary>
 /// Availability = (calendar time - all delay time) / calendar time.
 /// Utilisation = working time / available time, working time = sum of cycle minutes
-/// (queue counts as working - the truck is on shift and in the loop).
+/// (queue counts as working - the truck is on shift and in the loop). Available time
+/// counts idle time as available-but-not-working: a truck that isn't in a cycle or a
+/// delay is idle, and idle time depresses utilisation without depressing availability.
 /// Effective utilisation = working time / calendar time.
 ///
-/// Calendar time is truckCount x the window length, so a truck down for the whole
-/// window still counts toward the denominator even though it produced no cycles.
+/// Calendar time is truck-calendar-time summed over the trucks in scope (CalendarScope
+/// per-truck minutes x truckCount) - not wall-clock window length - so a truck down for
+/// the whole window still counts toward the denominator, and a shift filter shrinks
+/// calendar time along with the cycles instead of leaving it at the full window.
+///
+/// Idle minutes are a residual, never read from a table: calendar - working - delay,
+/// clamped at zero. There is no Idles table; idle is whatever calendar time cycles and
+/// delays don't account for.
 /// </summary>
 public static class AvailabilityCalculator
 {
@@ -18,45 +26,43 @@ public static class AvailabilityCalculator
         decimal WorkingMinutes,
         decimal AvailableMinutes,
         decimal CalendarMinutes,
-        decimal DelayMinutes);
+        decimal DelayMinutes,
+        decimal IdleMinutes,
+        decimal? IdlePercent);
 
     public static Result Calculate(
         DateTime from,
         DateTime to,
+        string? shift,
         int truckCount,
         IReadOnlyCollection<CycleRow> cycles,
         IReadOnlyCollection<DelayRow> delays)
     {
-        var windowMinutes = to > from ? (decimal)(to - from).TotalMinutes : 0m;
-        var calendarMinutes = windowMinutes * truckCount;
+        var calendarMinutes = CalendarScope.MinutesInScope(from, to, shift) * truckCount;
 
         if (calendarMinutes <= 0)
-            return new Result(null, null, null, 0m, 0m, 0m, 0m);
+            return new Result(null, null, null, 0m, 0m, 0m, 0m, 0m, null);
 
-        var delayMinutes = delays.Sum(d => OverlapMinutes(d.StartTime, d.EndTime, from, to));
+        var delayMinutes = delays.Sum(d => CalendarScope.OverlapMinutesInScope(d.StartTime, d.EndTime, from, to, shift));
         var workingMinutes = cycles.Sum(c => c.TotalCycleMin);
         var availableMinutes = calendarMinutes - delayMinutes;
         if (availableMinutes < 0) availableMinutes = 0m;
 
-        var availability = calendarMinutes > 0
-            ? (calendarMinutes - delayMinutes) / calendarMinutes
-            : (decimal?)null;
+        var idleMinutes = calendarMinutes - workingMinutes - delayMinutes;
+        if (idleMinutes < 0) idleMinutes = 0m;
+        var idlePercent = calendarMinutes > 0 ? idleMinutes / calendarMinutes : (decimal?)null;
+
+        var availability = (calendarMinutes - delayMinutes) / calendarMinutes;
 
         var utilisation = availableMinutes > 0
             ? workingMinutes / availableMinutes
             : (decimal?)null;
 
-        var effectiveUtilisation = calendarMinutes > 0
-            ? workingMinutes / calendarMinutes
-            : (decimal?)null;
+        var effectiveUtilisation = workingMinutes / calendarMinutes;
 
-        return new Result(availability, utilisation, effectiveUtilisation, workingMinutes, availableMinutes, calendarMinutes, delayMinutes);
-    }
-
-    private static decimal OverlapMinutes(DateTime delayStart, DateTime delayEnd, DateTime from, DateTime to)
-    {
-        var start = delayStart > from ? delayStart : from;
-        var end = delayEnd < to ? delayEnd : to;
-        return end > start ? (decimal)(end - start).TotalMinutes : 0m;
+        return new Result(
+            availability, utilisation, effectiveUtilisation,
+            workingMinutes, availableMinutes, calendarMinutes, delayMinutes,
+            idleMinutes, idlePercent);
     }
 }

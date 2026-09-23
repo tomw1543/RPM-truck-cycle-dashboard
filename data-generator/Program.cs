@@ -933,6 +933,15 @@ class TruckTimeline
     private DateTime _plannedUntil;
     private DelayRow? _lastDelay;
 
+    // Short dispatch idles (planted problem: idle time is otherwise absent - a truck is
+    // either in a cycle or in a delay, with no gaps). A handful of 5-20 minute waits are
+    // inserted per truck per shift while the truck is scheduled and available but simply
+    // not cycling. Idle time is never written anywhere - it's just a gap the API later
+    // reads back as a residual (calendar - cycle - delay).
+    private (DateOnly ShiftDate, string ShiftName)? _idleShiftKey;
+    private int _idleTargetForShift;
+    private int _idleInsertedForShift;
+
     // History: schedules for the whole window are already known.
     private readonly Func<int, DateOnly, string, ScheduleRow?>? _scheduleLookup;
     // Live: schedules are created just-in-time from this truck's known-delay snapshot.
@@ -1013,6 +1022,29 @@ class TruckTimeline
                 Cursor = shiftEnd;
                 if (horizon.HasValue && Cursor >= horizon.Value) return null;
                 continue;
+            }
+
+            var shiftKey = (shiftDate, shiftName);
+            if (_idleShiftKey != shiftKey)
+            {
+                _idleShiftKey = shiftKey;
+                _idleTargetForShift = _rng.Next(2, 5); // 2-4 short idles per truck per shift
+                _idleInsertedForShift = 0;
+            }
+
+            // Short dispatch idle: truck is available but not cycling for a few minutes.
+            // Not a delay (never written to Delays), not a row at all - just a cursor gap
+            // the API's idleMinutes residual picks up later.
+            if (_idleInsertedForShift < _idleTargetForShift && _rng.NextDouble() < 0.35)
+            {
+                var idleMin = 5 + _rng.NextDouble() * 15; // 5-20 minutes
+                var idleEnd = Cursor.AddMinutes(idleMin);
+                if (idleEnd < shiftEnd)
+                {
+                    Cursor = idleEnd;
+                    _idleInsertedForShift++;
+                    continue;
+                }
             }
 
             var route = _fleet.RouteById(schedule.RouteId.Value);

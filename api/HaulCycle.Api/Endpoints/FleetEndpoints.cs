@@ -13,6 +13,8 @@ public sealed record FleetSummaryData(
     decimal? Availability,
     decimal? Utilisation,
     decimal? EffectiveUtilisation,
+    decimal IdleMinutes,
+    decimal? IdlePercent,
     decimal? MatchFactor,
     PlanVsActualCalculator.Result PlanVsActual);
 
@@ -33,8 +35,8 @@ public static class FleetEndpoints
             if (meta.AsOf is null)
             {
                 // No data at all - still a valid (empty) response, not an error.
-                var empty = new FleetSummaryData(0, 0m, null, null, null, null, null, null, null, null,
-                    new PlanVsActualCalculator.Result(0m, null, null, []));
+                var empty = new FleetSummaryData(0, 0m, null, null, null, null, null, null, null, 0m, null, null,
+                    new PlanVsActualCalculator.Result(0m, null, null, [], true, 0));
                 return Results.Ok(new Envelope<FleetSummaryData>(null, from, to, empty));
             }
 
@@ -45,11 +47,11 @@ public static class FleetEndpoints
             var delays = await queries.GetDelaysAsync(fromDt, toDt, ct);
             var schedules = await queries.GetSchedulesAsync(fromDate, toDate, shift, ct);
 
-            var tonnesPerHour = TonnesPerHourCalculator.Calculate(cycles, fromDt, toDt);
+            var tonnesPerHour = TonnesPerHourCalculator.Calculate(cycles, fromDt, toDt, shift, meta.Counts.Trucks);
             var cycleTime = CycleTimeCalculator.Calculate(cycles);
-            var availability = AvailabilityCalculator.Calculate(fromDt, toDt, meta.Counts.Trucks, cycles, delays);
+            var availability = AvailabilityCalculator.Calculate(fromDt, toDt, shift, meta.Counts.Trucks, cycles, delays);
             var matchFactor = MatchFactorCalculator.Calculate(cycles, meta.Counts.Trucks, meta.Counts.Loaders);
-            var planVsActual = PlanVsActualCalculator.Calculate(cycles, schedules);
+            var planVsActual = PlanVsActualCalculator.Calculate(cycles, schedules, meta.AsOf.Value);
 
             var data = new FleetSummaryData(
                 cycles.Count,
@@ -61,6 +63,8 @@ public static class FleetEndpoints
                 availability.Availability,
                 availability.Utilisation,
                 availability.EffectiveUtilisation,
+                availability.IdleMinutes,
+                availability.IdlePercent,
                 matchFactor,
                 planVsActual);
 

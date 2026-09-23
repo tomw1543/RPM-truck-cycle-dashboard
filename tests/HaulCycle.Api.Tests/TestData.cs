@@ -20,13 +20,15 @@ internal static class TestData
         decimal queueMin = 0.8m,
         decimal? totalCycleMin = null,
         decimal payloadTonnes = 213m,
-        decimal capacityTonnes = 220m)
+        decimal capacityTonnes = 220m,
+        DateOnly? shiftDate = null,
+        string shiftName = "Day")
     {
         var total = totalCycleMin ?? loadMin + haulMin + dumpMin + returnMin + queueMin;
         return new CycleRow(
             start ?? new DateTime(2026, 9, 1, 8, 0, 0),
-            "Day",
-            new DateOnly(2026, 9, 1),
+            shiftName,
+            shiftDate ?? new DateOnly(2026, 9, 1),
             truck, loader, route, destination, material,
             loadMin, haulMin, dumpMin, returnMin, queueMin, total,
             payloadTonnes, capacityTonnes,
