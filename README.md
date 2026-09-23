@@ -228,16 +228,20 @@ for the same reason.
   truck cycle time). Below 1, loaders wait for trucks; above 1, trucks
   queue for loaders. Trucks/loaders here are fleet-wide reference counts,
   not "how many were active in the window."
-- **Plan vs actual** = actual tonnes in the window / planned tonnes from
-  `Schedules`, overall and per destination, counting only *complete*
-  shifts (`completeShiftsOnly: true`) — any shift whose end time is after
-  the data's as-of time is excluded from both totals (`excludedShiftCount`
-  says how many), since a shift still in progress has its full planned
-  tonnes committed against only partial actuals so far, which would drag
-  the ratio down for a reason that has nothing to do with performance. An
-  unavailable truck's schedule row has no `PlannedTonnes` and contributes
-  nothing to the plan total (it isn't the same as a truck that was
-  scheduled and produced 0).
+- **Plan vs actual** = actual tonnes / planned tonnes from `Schedules`,
+  overall and per destination. This is a shift-grained measure: both sides
+  are selected by whole shifts whose `ShiftDate` falls in the window, never
+  by raw cycle timestamp — mixing the two (an earlier defect) clips the
+  window's first and last shifts inconsistently, worst for the
+  midnight-crossing Night shift. Counting only *complete* shifts
+  (`completeShiftsOnly: true`) — any shift whose end time is after the
+  data's as-of time is excluded from both totals (`excludedShiftCount` says
+  how many) — since a shift still in progress has its full planned tonnes
+  committed against only partial actuals so far, which would drag the ratio
+  down for a reason that has nothing to do with performance. An unavailable
+  truck's schedule row has no `PlannedTonnes` and contributes nothing to the
+  plan total (it isn't the same as a truck that was scheduled and produced
+  0).
 
 ## Data model
 
@@ -384,65 +388,59 @@ numbers.
 ## Numbers
 
 Measured from a `--seed 42 --days 30` run against the fixed generator and API
-(2026-09-23), after the four API-slice-1 fixes below (truck-hour calendar
+(2026-09-23), after the five API-slice fixes below (truck-hour calendar
 denominators, shift-scoped calendar time, real idle time, complete-shifts-only
-plan vs actual). Because the history window runs from `days` ago up to *now*,
-re-running the same seed later shifts the end of the window and gives
-slightly different totals — the pattern is reproducible, the exact row count
-isn't:
+plan vs actual, and plan vs actual's shift-grained cycle window). Because the
+history window runs from `days` ago up to *now*, re-running the same seed
+later shifts the end of the window and gives slightly different totals — the
+pattern is reproducible, the exact row count isn't:
 
-- Cycles: 17,058. Delays: 2,362. Schedules: 756 (12 trucks x 63 shifts).
-  Cycle count is lower than earlier runs at the same seed/days because real
-  idle time (Fix 3) now consumes some of the shift that used to be packed
-  wall-to-wall with cycles.
-- Average cycle time by route: L1 to ROM pad 19.4 min, L1 to Waste dump 37.2
-  min, L1 to Crusher 20.6 min, L2 to ROM pad 27.2 min, L2 to Waste dump 30.3
-  min, L2 to Crusher 27.6 min, L3 to ROM pad 25.2 min, L3 to Waste dump 36.1
-  min, L3 to Crusher 14.3 min. By destination: ROM pad 23.6 min, Waste dump
+- Cycles: 16,830. Delays: 2,366. Schedules: 756 (12 trucks x 63 shifts).
+- Average cycle time by route: L1 to ROM pad 19.4 min, L1 to Waste dump 37.3
+  min, L1 to Crusher 20.7 min, L2 to ROM pad 27.2 min, L2 to Waste dump 30.3
+  min, L2 to Crusher 27.4 min, L3 to ROM pad 25.3 min, L3 to Waste dump 35.9
+  min, L3 to Crusher 14.4 min. By destination: ROM pad 23.7 min, Waste dump
   34.0 min (the planted slow ramp), Crusher 19.4 min.
 - Average payload: ~95.4% of capacity fleet-wide; T07 alone averages 80.1%.
-- Average queue by hour: ~0.8-1.1 min for other hours; 4.97 min at 06:00 and
-  5.27 min at 18:00 (shift change).
+- Average queue by hour: ~0.8-1.1 min for other hours; 4.95 min at 06:00 and
+  4.84 min at 18:00 (shift change).
 - Peak hourly average queue per loader on a non-shift-change hour (spike
-  visible): L1 9.2 min, L2 9.8 min, L3 8.1 min, against a non-spike baseline
+  visible): L1 8.8 min, L2 7.5 min, L3 10.7 min, against a non-spike baseline
   around 1 minute.
-- Delay counts and total minutes by reason: Crib break 736 (21,962 min),
-  Refuel 735 (11,076 min), Shift change handover 742 (11,167 min), Scheduled
-  maintenance 48 (11,627 min), Breakdown 83 (10,256 min), Tyre 12 (746 min),
-  Major breakdown 6 (18,106 min).
-- Unavailable schedule rows: 23, all reason "Major breakdown".
-- Trucks per route per shift: min 1, avg 1.69, max 5 (a consequence of random
+- Delay counts and total minutes by reason: Crib break 735 (22,088 min),
+  Refuel 740 (11,034 min), Shift change handover 742 (11,214 min), Scheduled
+  maintenance 48 (11,589 min), Breakdown 81 (9,812 min), Tyre 11 (703 min),
+  Major breakdown 9 (24,818 min).
+- Unavailable schedule rows: 34, all reason "Major breakdown".
+- Trucks per route per shift: min 1, avg 1.68, max 6 (a consequence of random
   assignment across 9 routes for 12 trucks).
-- Crusher guard fired on 2 of the 63 shifts (the other 61 landed at least one
+- Crusher guard fired on 4 of the 63 shifts (the other 59 landed at least one
   truck on a Crusher route by chance).
-- No overlapping cycles for any truck (the API's independent 5,964,000ms
-  "overlap" reading from a naive unordered self-join collapses to a
-  consistent, harmless ≤1,000ms once pairs are ordered — an artifact of
-  `StartTime DATETIME2(0)` truncating to whole seconds, not a real
-  double-booking); every cycle's route matches its truck's schedule for
-  that shift; no cycles were found for a truck marked unavailable for the
-  shift.
+- No overlapping cycles for any truck in history mode (the API's independent
+  self-join "overlap" reading collapses to a consistent, harmless ≤1,000ms
+  once pairs are ordered — an artifact of `StartTime DATETIME2(0)`
+  truncating to whole seconds, not a real double-booking); every cycle's
+  route matches its truck's schedule for that shift; no cycles were found
+  for a truck marked unavailable for the shift. Live mode's own overlap
+  behaviour is different — see "Live mode verification" below.
 
 ### Fix 1 — tonnes per calendar hour (truck-hours, not wall-clock hours)
 
 `tonnesPerCalendarHour` now divides by truck-calendar-hours (hours in scope
 x trucks in scope), not wall-clock hours alone. Default 7-day window:
-`tonnesPerOperatingHour` 509.4 t/h, `tonnesPerCalendarHour` 404.4 t/h (815,331
-t / (168h x 12 trucks) = 404.4 — previously this would have been computed as
-815,331 / 168 ≈ 4,853, off by roughly the fleet size). 30-day window:
-508.4 / 400.9 t/h.
+`tonnesPerOperatingHour` 512.9 t/h, `tonnesPerCalendarHour` 407.0 t/h —
+previously this would have been computed as tonnes / 168 wall-clock hours,
+off by roughly the fleet size. 30-day window: 509.9 / 395.5 t/h.
 
 ### Fix 2 — shift filter no longer corrupts calendar time
 
 `shift=Day` and `shift=Night` now shrink calendar time (and clip delay
 minutes) to that shift's hours instead of leaving calendar time at the full
 window. Over the default (last 7 days as of this run):
-unfiltered utilisation 0.9407, `shift=Day` 0.9417, `shift=Night` 0.9398 —
+unfiltered utilisation 0.9390, `shift=Day` 0.9424, `shift=Night` 0.9356 —
 both close to the unfiltered figure, not roughly half of it as before the
-fix. `tonnesPerCalendarHour` is 430.1 t/h (Day) and 378.7 t/h (Night) against
-404.4 t/h unfiltered — each shift's calendar hours are exactly half the
-unfiltered figure (2,016 -> 1,008 truck-hours over 7 days), verified directly
-by `CalendarScopeTests`.
+fix. `tonnesPerCalendarHour` is 430.9 t/h (Day) and 383.1 t/h (Night) against
+407.0 t/h unfiltered, verified directly by `CalendarScopeTests`.
 
 ### Fix 3 — real idle time
 
@@ -451,33 +449,98 @@ per shift, on top of the pre-existing "stay idle until the next shift
 boundary" behaviour for a truck whose delay ends mid-shift (confirmed by SQL:
 0 cycles found starting during a shift a truck was marked unavailable for).
 Idle is never written to any table; the API reports it as a residual.
-Default 7-day window: `idleMinutes` 6,050.3, `idlePercent` 5.0%, `utilisation`
-0.9407 (down from ~0.997 before this fix, and inside the ~0.90-0.95 range
-this was expected to land in — not tuned to hit it). 30-day window:
-`idleMinutes` 30,002.0, `idlePercent` 5.6%, `utilisation` 0.9337.
+Default 7-day window: `idleMinutes` 6,231.1, `idlePercent` 5.15%,
+`utilisation` 0.9390. 30-day window: `idleMinutes` 30,480.9, `idlePercent`
+5.69%, `utilisation` 0.9317.
 
 ### Fix 4 — plan vs actual excludes the in-progress shift
 
 `planVsActual.completeShiftsOnly` is always `true`; `excludedShiftCount`
 reports how many shift instances (not truck-shifts) were dropped for not
-being finished as of the data's as-of time. In this run only the single
-shift straddling `asOf` (2026-09-23T19:24:13, i.e. the current Night shift)
-is ever incomplete, so `excludedShiftCount` is 1 for any window that reaches
-`asOf` (the default 7-day window, the 30-day window, and `shift=Night`) and 0
-for `shift=Day` (the incomplete shift is a Night shift). Percent of plan:
-7-day window 78.6%, 30-day window 86.3%. These are closer than the pre-fix
-example in this task's brief (78.6% vs. 90.1%, from an earlier run/seed) but
-still not equal — the remaining gap is ordinary week-to-week variance in a
-7-day sample, not the trailing-partial-shift distortion this fix removes;
-excluding the in-progress shift moves the needle by less than a full
-percentage point here because only one 12-hour shift out of 14 (7-day
-window) or 62 (30-day window) was ever incomplete.
+being finished as of the data's as-of time.
 
-- Live mode at `--speed 10`: unchanged by this slice's fixes — see git
-  history for the most recent live-mode verification notes if needed; not
-  re-run for this pass since none of the four fixes touch live mode's event
-  loop (only history mode's `TruckTimeline` gained the idle-insertion
-  branch, which live mode shares, but live mode wasn't re-tested here).
+### Fix 5 — plan vs actual now uses a shift-grained cycle window
+
+Fix 4 alone still produced numbers that didn't reconcile with a direct SQL
+aggregate over the same shift set (measured: API reported 78.6%/86.3% for the
+7-/30-day windows against a SQL figure of 85.1%/84.6% for the same windows —
+not the "ordinary week-to-week sample variance" the Fix-4 writeup originally
+assumed). The real cause: `/api/fleet/summary` fed `PlanVsActualCalculator`
+the same cycle rows used by the cycle-grained KPIs
+(`HaulCycleQueries.GetCyclesAsync`, filtered `WHERE StartTime >= @From AND
+StartTime < @To` — a raw-timestamp window), while its `schedules` came from
+`GetSchedulesAsync`, filtered `WHERE ShiftDate >= @FromDate AND ShiftDate <=
+@ToDate` — a shift-grained window. Plan vs actual is a shift-grained measure:
+its numerator (actual tonnes, from cycles) and denominator (planned tonnes,
+from schedules) must come from exactly the same set of whole shifts. Mixing a
+timestamp-filtered numerator with a shift-date-filtered denominator
+systematically mis-included and mis-excluded cycles at the edges of the
+window — worst for the Night shift, which crosses midnight and so is clipped
+differently by a timestamp cut than by a `ShiftDate` cut.
+
+Fix: added `HaulCycleQueries.GetCyclesForShiftWindowAsync`, which selects
+`vw_CycleDetail` by `ShiftDate BETWEEN @FromDate AND @ToDate` — the same
+window `GetSchedulesAsync` already used — and wired it into
+`PlanVsActualCalculator` in place of the timestamp-filtered cycles. The
+cycle-grained KPIs (tonnes, cycle time, phase split, match factor,
+availability/utilisation) are unaffected; they correctly keep filtering by
+timestamp.
+
+After the fix, percent of plan: 7-day window 85.0%, 30-day window 85.3%,
+`shift=Day` 86.6% (`excludedShiftCount` 0 — the in-progress shift is Night),
+`shift=Night` 83.1% (`excludedShiftCount` 1). `tests/verify-plan-vs-actual.sh`
+recomputes the same figure directly in SQL from `vw_CycleDetail` and
+`vw_ScheduleDetail` (shift-set union, then drop any shift whose end is after
+`asOf`) and fails if the two disagree by more than 0.3 percentage points; run
+it with the API up and the `db` service running:
+
+```sh
+MSYS_NO_PATHCONV=1 API_BASE=http://localhost:5080 bash tests/verify-plan-vs-actual.sh
+```
+
+### Live mode verification
+
+Re-ran `--live --speed 10` for a wall-clock window covering roughly 15
+minutes (this repo has no automated live-mode test; see git history/PR notes
+for the manual verification log). Findings:
+
+- Steady-state insert rate (measured over the second half of the run, after
+  the initial per-truck catch-up settled) was ~2.4 events/minute at speed
+  10x. The naive expectation (fleet cycles/hour x speed / 60 ≈ 3.95/min)
+  overstates this because 2 of the 12 trucks were mid a long `Breakdown`/
+  `Major breakdown` delay inherited from history for the whole window and
+  produced nothing; adjusting for 10/12 trucks active and typical ~79%
+  effective utilisation lands almost exactly on the observed rate.
+- Idle gaps (6-30 minutes between consecutive cycles for the same truck) do
+  appear in live-generated rows, consistent with history's dispatch-idle
+  pattern; some of the larger gaps include an intervening delay rather than
+  pure idle, which is expected.
+- **Known issue found, not yet fixed:** a live run at higher speed
+  (`--speed 600`, chosen to force a 06:00 shift crossing within a few
+  minutes of wall time) confirmed the crossing happens and a `Schedules` row
+  gets created for the new shift (verified in the DB), but the process
+  crashed with `InvalidOperationException: The connection does not support
+  MultipleActiveResultSets` shortly after. Root cause: `OnScheduleCreated` in
+  `RunLiveAsync` is `async void` and unawaited, so when two trucks need a new
+  schedule at close to the same simulated instant (common right at a shift
+  boundary, when many trucks cross into the new shift together), its
+  fire-and-forget `InsertOneScheduleAsync` call can race with the main
+  loop's `InsertOneCycleAsync`/`InsertOneDelayAsync` on the same shared
+  `SqlConnection`, which isn't opened with MARS support. An unhandled
+  exception in an `async void` method crashes the whole process. This needs
+  a follow-up fix (e.g. await the schedule insert on the main loop, or give
+  it its own connection / serialize DB access) before live mode can be
+  trusted to run unattended across a shift boundary.
+- Also found (harmless, but real, not the ≤1s rounding artifact noted
+  above): `GetLatestEndPerTruckAsync`'s SQL computes a cycle's end time via
+  `DATEADD(MINUTE, CAST(... AS FLOAT), StartTime)`, and SQL Server truncates
+  a float minute argument to `DATEADD` instead of rounding it, so a live run
+  can resume a truck's timeline up to ~1 minute before its last historical
+  cycle actually ended, producing a small real overlap (observed: ~59
+  seconds) the first time that truck's live continuation fires. Cosmetic at
+  this scale, but worth fixing the same way `vw_CycleDetail`'s `EndTime`
+  formula already does (`DATEADD(SECOND, CAST(ROUND(minutes*60,0) AS INT),
+  StartTime)`).
 
 ## Azure cost notes
 

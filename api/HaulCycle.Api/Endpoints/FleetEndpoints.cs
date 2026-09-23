@@ -46,12 +46,15 @@ public static class FleetEndpoints
             var cycles = await queries.GetCyclesAsync(fromDt, toDt, shift, ct);
             var delays = await queries.GetDelaysAsync(fromDt, toDt, ct);
             var schedules = await queries.GetSchedulesAsync(fromDate, toDate, shift, ct);
+            // Plan vs actual is shift-grained: its cycles come from the same ShiftDate window as
+            // schedules, not the raw-timestamp window used by the cycle-grained KPIs above.
+            var planCycles = await queries.GetCyclesForShiftWindowAsync(fromDate, toDate, shift, ct);
 
             var tonnesPerHour = TonnesPerHourCalculator.Calculate(cycles, fromDt, toDt, shift, meta.Counts.Trucks);
             var cycleTime = CycleTimeCalculator.Calculate(cycles);
             var availability = AvailabilityCalculator.Calculate(fromDt, toDt, shift, meta.Counts.Trucks, cycles, delays);
             var matchFactor = MatchFactorCalculator.Calculate(cycles, meta.Counts.Trucks, meta.Counts.Loaders);
-            var planVsActual = PlanVsActualCalculator.Calculate(cycles, schedules, meta.AsOf.Value);
+            var planVsActual = PlanVsActualCalculator.Calculate(planCycles, schedules, meta.AsOf.Value);
 
             var data = new FleetSummaryData(
                 cycles.Count,

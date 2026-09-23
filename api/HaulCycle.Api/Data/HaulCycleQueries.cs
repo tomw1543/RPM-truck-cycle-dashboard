@@ -76,6 +76,32 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
         return rows.AsList();
     }
 
+    /// <summary>Cycles selected by ShiftDate (not StartTime), for plan-vs-actual only. Plan vs
+    /// actual is a shift-grained measure: it must pull the numerator (actual tonnes, from cycles)
+    /// and the denominator (planned tonnes, from schedules) from exactly the same set of whole
+    /// shifts - the ones whose ShiftDate falls in [fromDate, toDate]. Filtering cycles by raw
+    /// StartTime instead (as GetCyclesAsync does, correctly, for cycle-grained KPIs) clips the
+    /// window's first and last shifts inconsistently with the shift-filtered schedules, especially
+    /// for the Night shift that crosses midnight - that mismatch was the plan-vs-actual defect.</summary>
+    public async Task<IReadOnlyList<CycleRow>> GetCyclesForShiftWindowAsync(DateOnly fromDate, DateOnly toDate, string? shift, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                StartTime, ShiftName, ShiftDate, TruckName, LoaderName, RouteName, DestinationName, Material,
+                LoadMin, HaulMin, DumpMin, ReturnMin, QueueMin, TotalCycleMin, PayloadTonnes, CapacityTonnes,
+                PayloadPercentOfCapacity, FuelLitres
+            FROM dbo.vw_CycleDetail
+            WHERE ShiftDate >= @FromDate AND ShiftDate <= @ToDate
+              AND (@Shift IS NULL OR ShiftName = @Shift);
+            """;
+        var rows = await conn.QueryAsync<CycleRow>(new CommandDefinition(
+            sql,
+            new { FromDate = fromDate.ToDateTime(TimeOnly.MinValue), ToDate = toDate.ToDateTime(TimeOnly.MinValue), Shift = shift },
+            cancellationToken: ct));
+        return rows.AsList();
+    }
+
     public async Task<IReadOnlyList<DelayRow>> GetDelaysAsync(DateTime from, DateTime to, CancellationToken ct = default)
     {
         using var conn = connectionFactory.CreateConnection();
