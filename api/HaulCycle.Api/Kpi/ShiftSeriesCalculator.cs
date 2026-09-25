@@ -23,9 +23,10 @@ public static class ShiftSeriesCalculator
         decimal? PlannedTonnes,
         decimal ActualTonnes,
         int Cycles,
-        decimal? AveragePayloadPercent);
+        decimal? AveragePayloadPercent,
+        bool IsComplete);
 
-    public static IReadOnlyList<Result> Calculate(IReadOnlyCollection<CycleRow> cycles, IReadOnlyCollection<ScheduleRow> schedules)
+    public static IReadOnlyList<Result> Calculate(IReadOnlyCollection<CycleRow> cycles, IReadOnlyCollection<ScheduleRow> schedules, DateTime asOf)
     {
         var cyclesByShift = cycles
             .GroupBy(c => (c.ShiftDate, c.ShiftName))
@@ -48,6 +49,7 @@ public static class ShiftSeriesCalculator
 
             var actualTonnes = shiftCycles.Sum(c => c.PayloadTonnes);
             decimal? averagePayloadPercent = shiftCycles.Count > 0 ? shiftCycles.Average(c => c.PayloadPercentOfCapacity) : null;
+            var isComplete = ShiftWindow.End(key.ShiftDate, key.ShiftName) <= asOf;
 
             results.Add(new Result(
                 key.ShiftDate,
@@ -57,7 +59,8 @@ public static class ShiftSeriesCalculator
                 schedule?.PlannedTonnes,
                 actualTonnes,
                 shiftCycles.Count,
-                averagePayloadPercent));
+                averagePayloadPercent,
+                isComplete));
         }
 
         return results;

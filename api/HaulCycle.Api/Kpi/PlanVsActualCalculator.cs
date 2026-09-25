@@ -31,7 +31,7 @@ public static class PlanVsActualCalculator
         var incompleteShifts = cycles.Select(c => (c.ShiftDate, c.ShiftName))
             .Concat(schedules.Select(s => (s.ShiftDate, s.ShiftName)))
             .Distinct()
-            .Where(shift => ShiftEnd(shift.ShiftDate, shift.ShiftName) > asOf)
+            .Where(shift => ShiftWindow.End(shift.ShiftDate, shift.ShiftName) > asOf)
             .ToHashSet();
 
         var completeCycles = cycles.Where(c => !incompleteShifts.Contains((c.ShiftDate, c.ShiftName))).ToList();
@@ -65,9 +65,4 @@ public static class PlanVsActualCalculator
 
         return new Result(actualTotal, plannedTotal, percentOfPlan, byDestination, true, incompleteShifts.Count);
     }
-
-    private static DateTime ShiftEnd(DateOnly shiftDate, string shiftName) =>
-        shiftName == "Day"
-            ? shiftDate.ToDateTime(TimeOnly.MinValue).AddHours(18)
-            : shiftDate.ToDateTime(TimeOnly.MinValue).AddDays(1).AddHours(6);
 }

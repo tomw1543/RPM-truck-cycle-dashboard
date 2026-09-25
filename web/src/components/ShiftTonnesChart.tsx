@@ -1,4 +1,4 @@
-import { Bar, BarChart, CartesianGrid, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, Cell, LabelList, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import type { ShiftSeries } from '../api/types'
 import { fmtTonnes, fmtTonnesCompact } from '../lib/format'
 
@@ -13,10 +13,11 @@ function shiftLabel(s: ShiftSeries): string {
 
 function toChartRow(s: ShiftSeries) {
   return {
-    label: shiftLabel(s),
+    label: shiftLabel(s) + (s.isComplete ? '' : ' (in progress)'),
     Actual: s.actualTonnes,
     Planned: s.plannedTonnes ?? 0,
     unavailableReason: s.unavailableReason,
+    isComplete: s.isComplete,
   }
 }
 
@@ -29,6 +30,7 @@ export function ShiftTonnesChart({ shifts }: ShiftTonnesChartProps) {
   const rows = shifts.map(toChartRow)
   const hasData = rows.length > 0
   const unavailableShifts = shifts.filter((s) => s.unavailableReason)
+  const hasIncompleteShift = shifts.some((s) => !s.isComplete)
 
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
@@ -48,6 +50,9 @@ export function ShiftTonnesChart({ shifts }: ShiftTonnesChartProps) {
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="Actual" fill="#22d3ee" radius={[3, 3, 0, 0]}>
+                {rows.map((row, i) => (
+                  <Cell key={i} fillOpacity={row.isComplete ? 1 : 0.5} />
+                ))}
                 <LabelList dataKey="unavailableReason" position="top" formatter={unavailableLabel} fill="#f97316" fontSize={10} />
               </Bar>
               <Bar dataKey="Planned" fill="#475569" radius={[3, 3, 0, 0]} />
@@ -61,6 +66,12 @@ export function ShiftTonnesChart({ shifts }: ShiftTonnesChartProps) {
       {unavailableShifts.length > 0 && (
         <p className="mt-2 text-xs text-orange-400/80">
           Unavailable: {unavailableShifts.map((s) => `${shiftLabel(s)} (${s.unavailableReason})`).join(', ')}
+        </p>
+      )}
+
+      {hasIncompleteShift && (
+        <p className="mt-2 text-xs text-slate-500">
+          The most recent shift shown may still be running - its actual tonnes are partial, not a full-shift total.
         </p>
       )}
     </div>

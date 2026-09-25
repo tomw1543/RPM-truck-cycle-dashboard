@@ -121,6 +121,7 @@ export interface ShiftSeries {
   actualTonnes: number
   cycles: number
   averagePayloadPercent: number | null
+  isComplete: boolean
 }
 
 /** TruckEndpoints.TruckDetailData. */

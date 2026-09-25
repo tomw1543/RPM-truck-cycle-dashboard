@@ -30,7 +30,7 @@ const COLUMNS: Column[] = [
   { key: 'availability', label: 'Availability', format: fmtPercentFraction, worseWhen: 'lower' },
   { key: 'utilisation', label: 'Utilisation', format: fmtPercentFraction, worseWhen: 'lower' },
   { key: 'effectiveUtilisation', label: 'Eff. utilisation', format: fmtPercentFraction, worseWhen: 'lower' },
-  { key: 'idlePercent', label: 'Idle %', format: fmtPercentFraction, worseWhen: 'higher' },
+  { key: 'idlePercent', label: 'Idle %', format: (v) => fmtPercentFraction(v, 1), worseWhen: 'higher' },
 ]
 
 function isWorse(column: Column, value: number | null, fleetValue: number | null): boolean {

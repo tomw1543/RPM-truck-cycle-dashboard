@@ -51,7 +51,7 @@ export function Overview({ live }: OverviewProps) {
               <KpiTile label="Availability" value={fmtPercentFraction(fleetSummary.data.data.availability)} />
               <KpiTile label="Utilisation" value={fmtPercentFraction(fleetSummary.data.data.utilisation)} />
               <KpiTile label="Match factor" value={fmtRatio(fleetSummary.data.data.matchFactor)} />
-              <KpiTile label="Idle %" value={fmtPercentFraction(fleetSummary.data.data.idlePercent)} />
+              <KpiTile label="Idle %" value={fmtPercentFraction(fleetSummary.data.data.idlePercent, 1)} />
             </div>
 
             <DestinationChart

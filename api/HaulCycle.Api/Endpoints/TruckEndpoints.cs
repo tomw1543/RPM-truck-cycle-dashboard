@@ -40,7 +40,8 @@ public sealed record ShiftSeriesData(
     decimal? PlannedTonnes,
     decimal ActualTonnes,
     int Cycles,
-    decimal? AveragePayloadPercent);
+    decimal? AveragePayloadPercent,
+    bool IsComplete);
 
 public sealed record TruckDetailData(
     TruckKpis Truck,
@@ -149,8 +150,8 @@ public static class TruckEndpoints
                 .Where(s => s.TruckName == truck.Name)
                 .ToList();
 
-            var shifts = ShiftSeriesCalculator.Calculate(shiftCycles, shiftSchedules)
-                .Select(r => new ShiftSeriesData(r.ShiftDate, r.ShiftName, r.RouteName, r.UnavailableReason, r.PlannedTonnes, r.ActualTonnes, r.Cycles, r.AveragePayloadPercent))
+            var shifts = ShiftSeriesCalculator.Calculate(shiftCycles, shiftSchedules, meta.AsOf.Value)
+                .Select(r => new ShiftSeriesData(r.ShiftDate, r.ShiftName, r.RouteName, r.UnavailableReason, r.PlannedTonnes, r.ActualTonnes, r.Cycles, r.AveragePayloadPercent, r.IsComplete))
                 .ToList();
 
             var data = new TruckDetailData(truckKpis, fleetKpis, phaseSplit, delaysByReason, shifts);
