@@ -27,15 +27,21 @@ See [`docs/roadmap.md`](docs/roadmap.md) for diagnostics planned after phase 1.
 
 ### 1. Configure the database password
 
+Create a `.env` file in the repo root (it's git-ignored) with three variables:
+
 ```sh
-cp .env.example .env
+MSSQL_SA_PASSWORD=<sa password>
+HAUL_API_PASSWORD=<haul_api password>
+HAUL_API_DB_CONN=Server=localhost,1433;Database=HaulCycleInsights;User Id=haul_api;Password=<haul_api password>;TrustServerCertificate=True
 ```
 
-Edit `.env` and set `MSSQL_SA_PASSWORD` to a strong password (SQL Server
-requires 8+ characters covering at least three of: uppercase, lowercase,
-digit, symbol). Also set `HAUL_API_PASSWORD` (same rule) — it's the
-password for the read-only `haul_api` login the API connects with; see
-[Create the read-only login](#create-the-read-only-login) below.
+Both passwords must meet SQL Server's rule: 8+ characters covering at least
+three of uppercase, lowercase, digit and symbol. `HAUL_API_PASSWORD` is for
+the read-only `haul_api` login the API connects with (see
+[Create the read-only login](#create-the-read-only-login) below), and the
+password inside `HAUL_API_DB_CONN` must match it. Don't `source .env` in
+bash: the values are unquoted, so bash cuts the connection string at the
+first `;`.
 
 ### 2. Start SQL Server
 
