@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background: #0b0d12;
+  color: #d7dae0;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+* {
+  box-sizing: border-box;
+}

@@ -23,7 +23,7 @@ See [`docs/roadmap.md`](docs/roadmap.md) for diagnostics planned after phase 1.
 
 - .NET 9 SDK
 - Docker Desktop
-- Node 22 (once the `web/` frontend exists)
+- Node 22 (for the `web/` frontend)
 
 ### 1. Configure the database password
 
@@ -242,6 +242,27 @@ for the same reason.
   truck's schedule row has no `PlannedTonnes` and contributes nothing to the
   plan total (it isn't the same as a truck that was scheduled and produced
   0).
+
+## Web
+
+React frontend in `web/` (Vite, TypeScript, Tailwind CSS, TanStack Query,
+React Router, Recharts). The API must already be running on `:5281`
+(`dotnet run --project api/HaulCycle.Api`) before you start the dev server:
+
+```sh
+cd web
+npm install
+npm run dev            # http://localhost:5173, proxies /api and /health to :5281
+```
+
+`npm run build` and `npm run lint` (`oxlint`) both run without a live API,
+since the frontend only needs its own source to type-check and bundle. The
+window (date range + shift), not just the KPIs, lives in the URL's query
+string, so a link to the overview page carries its filters with it. The
+first slice covers the fleet overview screen (`/`) against
+`/api/fleet/summary`; `/trucks/:id` and `/losses` are stub pages until
+those endpoints exist. Set `VITE_API_BASE_URL` (see `web/.env.example`) to
+point a production build at a deployed API instead of the dev proxy.
 
 ## Data model
 
