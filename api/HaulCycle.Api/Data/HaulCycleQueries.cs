@@ -10,6 +10,17 @@ public sealed record FleetCounts(int Trucks, int Loaders, int Routes, int Destin
 /// in vw_CycleDetail.</summary>
 public sealed record TruckInfo(string Name, decimal CapacityTonnes);
 
+/// <summary>One row of route reference data (all 9 routes, regardless of whether they have any
+/// cycles in a given window).</summary>
+public sealed record RouteInfo(
+    string RouteName,
+    string LoaderName,
+    string DestinationName,
+    string Material,
+    decimal DistanceKm,
+    decimal GradePercent,
+    decimal BookCycleMin);
+
 public sealed record MetaInfo(DateTime? AsOf, DateOnly? FirstDate, DateOnly? LastDate, FleetCounts Counts);
 
 /// <summary>
@@ -72,6 +83,42 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
         using var conn = connectionFactory.CreateConnection();
         const string sql = "SELECT Name, CapacityTonnes FROM dbo.Trucks ORDER BY Name;";
         var rows = await conn.QueryAsync<TruckInfo>(new CommandDefinition(sql, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>All 9 routes, with reference fields and their book cycle time. Ordered by name so
+    /// callers get a stable order regardless of RouteId.</summary>
+    public async Task<IReadOnlyList<RouteInfo>> GetRoutesAsync(CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                r.Name AS RouteName, l.Name AS LoaderName, d.Name AS DestinationName, d.Material,
+                r.DistanceKm, r.GradePercent, r.BookCycleMin
+            FROM dbo.Routes r
+            JOIN dbo.Loaders l ON l.LoaderId = r.LoaderId
+            JOIN dbo.Destinations d ON d.DestinationId = r.DestinationId
+            ORDER BY r.Name;
+            """;
+        var rows = await conn.QueryAsync<RouteInfo>(new CommandDefinition(sql, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Every cycle ever recorded (no window), for RouteBenchmarkCalculator - the 25th
+    /// percentile benchmark is computed over all data, not the requested window, so a cycle's
+    /// recoverable minutes don't change when you change dates (see CONTEXT.md's Benchmark
+    /// definition).</summary>
+    public async Task<IReadOnlyList<CycleRow>> GetBenchmarkCyclesAsync(CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                StartTime, ShiftName, ShiftDate, TruckName, LoaderName, RouteName, DestinationName, Material,
+                LoadMin, HaulMin, DumpMin, ReturnMin, QueueMin, TotalCycleMin, PayloadTonnes, CapacityTonnes,
+                PayloadPercentOfCapacity, FuelLitres
+            FROM dbo.vw_CycleDetail;
+            """;
+        var rows = await conn.QueryAsync<CycleRow>(new CommandDefinition(sql, cancellationToken: ct));
         return rows.AsList();
     }
 

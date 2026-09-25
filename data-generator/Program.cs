@@ -371,13 +371,14 @@ async Task ResetAndSeedReferenceDataAsync(SqlConnection conn)
     foreach (var r in fleet.Routes)
     {
         await using var cmd = new SqlCommand(
-            "INSERT INTO dbo.Routes (RouteId, Name, LoaderId, DestinationId, DistanceKm, GradePercent) VALUES (@id, @name, @loader, @dest, @dist, @grade);", conn);
+            "INSERT INTO dbo.Routes (RouteId, Name, LoaderId, DestinationId, DistanceKm, GradePercent, BookCycleMin) VALUES (@id, @name, @loader, @dest, @dist, @grade, @book);", conn);
         cmd.Parameters.AddWithValue("@id", r.Id);
         cmd.Parameters.AddWithValue("@name", r.Name);
         cmd.Parameters.AddWithValue("@loader", r.LoaderId);
         cmd.Parameters.AddWithValue("@dest", r.DestinationId);
         cmd.Parameters.AddWithValue("@dist", (decimal)r.DistanceKm);
         cmd.Parameters.AddWithValue("@grade", (decimal)r.GradePercent);
+        cmd.Parameters.AddWithValue("@book", Math.Round((decimal)Scheduler.BookCycleMinutes(r), 2));
         await cmd.ExecuteNonQueryAsync();
     }
 }

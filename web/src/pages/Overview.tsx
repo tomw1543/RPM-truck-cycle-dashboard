@@ -1,8 +1,9 @@
-import { useMeta, useFleetSummary } from '../api/hooks'
+import { useMeta, useFleetSummary, useRoutes } from '../api/hooks'
 import { ApiError } from '../api/client'
 import { DestinationChart } from '../components/DestinationChart'
 import { KpiTile } from '../components/KpiTile'
 import { PhaseSplitBar } from '../components/PhaseSplitBar'
+import { RoutesTable } from '../components/RoutesTable'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
 import { useWindowState } from '../components/useWindowState'
@@ -16,6 +17,7 @@ export function Overview({ live }: OverviewProps) {
   const [windowState, setWindowState] = useWindowState()
   const meta = useMeta(live)
   const fleetSummary = useFleetSummary(windowState, live)
+  const routes = useRoutes(windowState, live)
 
   const bounds = meta.data
     ? { first: meta.data.from, last: meta.data.to }
@@ -64,6 +66,8 @@ export function Overview({ live }: OverviewProps) {
               phaseSplit={fleetSummary.data.data.phaseSplit}
               averageCycleMin={fleetSummary.data.data.averageCycleMin}
             />
+
+            {routes.data && <RoutesTable routes={routes.data.data.routes} />}
           </>
         )
       )}

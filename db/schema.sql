@@ -45,6 +45,7 @@ CREATE TABLE dbo.Routes (
     DestinationId  INT            NOT NULL REFERENCES dbo.Destinations(DestinationId),
     DistanceKm     DECIMAL(5,2)   NOT NULL,
     GradePercent   DECIMAL(4,1)   NOT NULL,
+    BookCycleMin   DECIMAL(5,2)   NOT NULL,
     CONSTRAINT UQ_Routes_Loader_Destination UNIQUE (LoaderId, DestinationId)
 );
 

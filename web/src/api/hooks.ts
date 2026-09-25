@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, apiGet } from './client'
-import type { Envelope, FleetSummary, FleetSummaryParams, Meta, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
+import type { Envelope, FleetSummary, FleetSummaryParams, Meta, RoutesListData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
 
 /** Matches the server's 30s output-cache policy on /api/meta and /api/fleet/summary
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
@@ -32,6 +32,19 @@ export function useTrucks(params: TruckWindowParams, live: boolean) {
     queryKey: ['trucks', params],
     queryFn: () =>
       apiGet<Envelope<TrucksListData>>('/api/trucks', {
+        from: params.from,
+        to: params.to,
+        shift: params.shift,
+      }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+export function useRoutes(params: TruckWindowParams, live: boolean) {
+  return useQuery({
+    queryKey: ['routes', params],
+    queryFn: () =>
+      apiGet<Envelope<RoutesListData>>('/api/routes', {
         from: params.from,
         to: params.to,
         shift: params.shift,

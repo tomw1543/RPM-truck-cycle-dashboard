@@ -13,7 +13,7 @@ function shiftLabel(s: ShiftSeries): string {
 
 function toChartRow(s: ShiftSeries) {
   return {
-    label: shiftLabel(s) + (s.isComplete ? '' : ' (in progress)'),
+    label: shiftLabel(s) + (s.isComplete ? '' : ' *'),
     Actual: s.actualTonnes,
     Planned: s.plannedTonnes ?? 0,
     unavailableReason: s.unavailableReason,
@@ -39,7 +39,7 @@ export function ShiftTonnesChart({ shifts }: ShiftTonnesChartProps) {
       {hasData ? (
         <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} margin={{ top: 16, right: 8, left: 0, bottom: 0 }}>
+            <BarChart data={rows} margin={{ top: 16, right: 20, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
               <XAxis dataKey="label" stroke="#64748b" fontSize={11} interval={0} angle={-45} textAnchor="end" height={50} />
               <YAxis stroke="#64748b" fontSize={12} tickFormatter={fmtTonnesCompact} />
@@ -71,7 +71,7 @@ export function ShiftTonnesChart({ shifts }: ShiftTonnesChartProps) {
 
       {hasIncompleteShift && (
         <p className="mt-2 text-xs text-slate-500">
-          The most recent shift shown may still be running - its actual tonnes are partial, not a full-shift total.
+          * still running - its actual tonnes are partial, not a full-shift total.
         </p>
       )}
     </div>

@@ -138,3 +138,43 @@ export interface TruckWindowParams {
   to?: string
   shift?: Shift
 }
+
+/** RouteEndpoints.RoutePhaseData. averageMin is the window average; benchmarkMin is the route's
+ * all-time 25th percentile (RouteBenchmarkCalculator) - independent of the requested window. */
+export interface RoutePhase {
+  averageMin: number | null
+  benchmarkMin: number | null
+}
+
+/** RouteEndpoints.RoutePhasesData. */
+export interface RoutePhases {
+  queue: RoutePhase
+  load: RoutePhase
+  haul: RoutePhase
+  dump: RoutePhase
+  return: RoutePhase
+}
+
+/** RouteEndpoints.RouteData. One row per route (all 9, including a route with zero cycles in
+ * the window). vsBook is a fraction (averageCycleMin / bookCycleMin - 1), null with no cycles in
+ * the window. benchmarkCycleMin is the route's all-time 25th-percentile total cycle time. */
+export interface RouteData {
+  routeName: string
+  loaderName: string
+  destinationName: string
+  material: string
+  distanceKm: number
+  gradePercent: number
+  bookCycleMin: number
+  cycles: number
+  tonnes: number
+  averageCycleMin: number | null
+  vsBook: number | null
+  benchmarkCycleMin: number | null
+  phases: RoutePhases
+}
+
+/** RouteEndpoints.RoutesListData. */
+export interface RoutesListData {
+  routes: RouteData[]
+}

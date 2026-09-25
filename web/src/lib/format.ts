@@ -18,6 +18,11 @@ export function fmtPercentFraction(value: number | null | undefined, digits = 0)
   return fmt(value, (v) => `${(v * 100).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`)
 }
 
+/** value is a signed 0-1 fraction (RouteData.vsBook) - rendered with an explicit +/- sign. */
+export function fmtSignedPercentFraction(value: number | null | undefined, digits = 1): string {
+  return fmt(value, (v) => `${v >= 0 ? '+' : ''}${(v * 100).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`)
+}
+
 /** value is already on a 0-100 scale (CycleTimeCalculator.PhaseSplit). */
 export function fmtPercentScaled(value: number | null | undefined, digits = 0): string {
   return fmt(value, (v) => `${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`)

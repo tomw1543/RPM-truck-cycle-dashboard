@@ -60,6 +60,7 @@ app.MapHealthEndpoints();
 app.MapMetaEndpoints();
 app.MapFleetEndpoints();
 app.MapTruckEndpoints();
+app.MapRouteEndpoints();
 
 app.Run();
 return 0;

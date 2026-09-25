@@ -222,6 +222,18 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
   per shift in the window on the same shift-grained basis as plan vs actual
   (unavailable shifts have `routeName`/`plannedTonnes` null and
   `unavailableReason` set instead).
+- **`GET /api/routes`** — same `from`/`to`/`shift` params as
+  `/api/fleet/summary`. `data.routes` is one row per route (all 9, including
+  a route with zero cycles in the window): `routeName`, `loaderName`,
+  `destinationName`, `material`, `distanceKm`, `gradePercent`,
+  `bookCycleMin`, `cycles`, `tonnes`, `averageCycleMin`, `vsBook`
+  (`averageCycleMin / bookCycleMin - 1`, null with no cycles in the window),
+  `benchmarkCycleMin` (the route's all-time 25th-percentile total cycle
+  time — from `RouteBenchmarkCalculator`, computed over every cycle ever
+  recorded, never the requested window, so it doesn't shift when the window
+  does), and `phases` — for each of queue/load/haul/dump/return, `{
+  averageMin, benchmarkMin }` (window average alongside the same all-time
+  25th-percentile benchmark).
 
 ### KPI formulas
 
@@ -290,7 +302,9 @@ since the frontend only needs its own source to type-check and bundle. The
 window (date range + shift), not just the KPIs, lives in the URL's query
 string, so a link to the overview page carries its filters with it. The
 first slice covers the fleet overview screen (`/`) against
-`/api/fleet/summary`. The trucks slice adds a sortable roster table (`/trucks`,
+`/api/fleet/summary`, with a routes table below it (against `/api/routes`,
+sorted worst-first by `vsBook`, rows more than 10% over book highlighted).
+The trucks slice adds a sortable roster table (`/trucks`,
 against `/api/trucks`, fleet-average row pinned at the top, cells more than
 10% worse than fleet highlighted) and a per-truck detail page (`/trucks/:name`,
 against `/api/trucks/{name}`: KPI tiles against the fleet average, planned vs
@@ -305,8 +319,9 @@ the dev proxy.
 - **Loaders**: the loaders (3: L1, L2, L3).
 - **Destinations**: the three dump points (ROM pad and Crusher are Ore, Waste
   dump is Waste).
-- **Routes**: every loader x destination pair (9), each with its own distance
-  and grade.
+- **Routes**: every loader x destination pair (9), each with its own distance,
+  grade and book cycle time (`BookCycleMin` — full payload, no slow ramp, no
+  noise; `Scheduler.BookCycleMinutes`, also used to build `Schedules`).
 - **Cycles**: one row per completed load -> haul -> dump -> return loop, with
   the truck's route and loader for that cycle.
 - **Delays**: one row per period a truck is out of production, planned or
