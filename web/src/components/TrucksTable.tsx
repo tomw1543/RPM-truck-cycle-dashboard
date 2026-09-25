@@ -65,7 +65,7 @@ export function TrucksTable({ fleet, trucks, windowQuery }: TrucksTableProps) {
     <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/60">
       <table className="w-full min-w-[900px] text-sm">
         <thead>
-          <tr className="border-b border-slate-800 text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-800 text-left text-xs uppercase tracking-wide text-slate-400">
             <th className="px-3 py-2 font-medium">Truck</th>
             {COLUMNS.map((col) => (
               <th key={col.key} className="px-3 py-2 text-right font-medium">
@@ -99,12 +99,16 @@ export function TrucksTable({ fleet, trucks, windowQuery }: TrucksTableProps) {
               </td>
               {COLUMNS.map((col) => {
                 const value = truck[col.key]
-                const worse = isWorse(col, value, fleet[col.key])
+                const fleetValue = fleet[col.key]
+                const worse = isWorse(col, value, fleetValue)
+                const percentDiff = worse && fleetValue !== null && fleetValue !== 0 && value !== null ? ((value - fleetValue) / Math.abs(fleetValue)) * 100 : null
                 return (
                   <td
                     key={col.key}
                     className={`px-3 py-2 text-right tabular-nums ${worse ? 'bg-red-950/50 text-red-300' : 'text-slate-300'}`}
+                    title={worse && percentDiff !== null ? `${percentDiff >= 0 ? '+' : ''}${percentDiff.toFixed(0)}% vs fleet average` : undefined}
                   >
+                    {worse && <span aria-hidden="true">▲ </span>}
                     {col.format(value)}
                   </td>
                 )

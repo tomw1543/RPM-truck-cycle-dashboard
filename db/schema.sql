@@ -46,6 +46,11 @@ CREATE TABLE dbo.Routes (
     DistanceKm     DECIMAL(5,2)   NOT NULL,
     GradePercent   DECIMAL(4,1)   NOT NULL,
     BookCycleMin   DECIMAL(5,2)   NOT NULL,
+    BookQueueMin   DECIMAL(5,2)   NOT NULL,
+    BookLoadMin    DECIMAL(5,2)   NOT NULL,
+    BookHaulMin    DECIMAL(5,2)   NOT NULL,
+    BookDumpMin    DECIMAL(5,2)   NOT NULL,
+    BookReturnMin  DECIMAL(5,2)   NOT NULL,
     CONSTRAINT UQ_Routes_Loader_Destination UNIQUE (LoaderId, DestinationId)
 );
 

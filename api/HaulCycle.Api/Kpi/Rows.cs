@@ -33,6 +33,18 @@ public sealed record DelayRow(
     string Reason,
     bool IsPlanned);
 
+/// <summary>One route's book-rate phase breakdown (dbo.Routes), for MinutesOverBookCalculator -
+/// kept as a plain Kpi-layer row (rather than reusing Data.RouteInfo) so the calculator stays
+/// free of DB types, same as CycleRow/DelayRow/ScheduleRow.</summary>
+public sealed record RouteBookRow(
+    string RouteName,
+    decimal BookCycleMin,
+    decimal BookQueueMin,
+    decimal BookLoadMin,
+    decimal BookHaulMin,
+    decimal BookDumpMin,
+    decimal BookReturnMin);
+
 /// <summary>One row from vw_ScheduleDetail. Route/Loader/Destination/plan fields are
 /// null when the truck was unavailable for the shift.</summary>
 public sealed record ScheduleRow(

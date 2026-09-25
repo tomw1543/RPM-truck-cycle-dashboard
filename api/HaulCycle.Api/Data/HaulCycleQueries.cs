@@ -19,7 +19,12 @@ public sealed record RouteInfo(
     string Material,
     decimal DistanceKm,
     decimal GradePercent,
-    decimal BookCycleMin);
+    decimal BookCycleMin,
+    decimal BookQueueMin,
+    decimal BookLoadMin,
+    decimal BookHaulMin,
+    decimal BookDumpMin,
+    decimal BookReturnMin);
 
 public sealed record MetaInfo(DateTime? AsOf, DateOnly? FirstDate, DateOnly? LastDate, FleetCounts Counts);
 
@@ -94,7 +99,8 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
         const string sql = """
             SELECT
                 r.Name AS RouteName, l.Name AS LoaderName, d.Name AS DestinationName, d.Material,
-                r.DistanceKm, r.GradePercent, r.BookCycleMin
+                r.DistanceKm, r.GradePercent, r.BookCycleMin,
+                r.BookQueueMin, r.BookLoadMin, r.BookHaulMin, r.BookDumpMin, r.BookReturnMin
             FROM dbo.Routes r
             JOIN dbo.Loaders l ON l.LoaderId = r.LoaderId
             JOIN dbo.Destinations d ON d.DestinationId = r.DestinationId

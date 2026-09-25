@@ -370,15 +370,28 @@ async Task ResetAndSeedReferenceDataAsync(SqlConnection conn)
 
     foreach (var r in fleet.Routes)
     {
+        var phases = Scheduler.BookCyclePhases(r);
+        var queue = Math.Round((decimal)phases.QueueMin, 2);
+        var load = Math.Round((decimal)phases.LoadMin, 2);
+        var haul = Math.Round((decimal)phases.HaulMin, 2);
+        var dump = Math.Round((decimal)phases.DumpMin, 2);
+        var ret = Math.Round((decimal)phases.ReturnMin, 2);
+
         await using var cmd = new SqlCommand(
-            "INSERT INTO dbo.Routes (RouteId, Name, LoaderId, DestinationId, DistanceKm, GradePercent, BookCycleMin) VALUES (@id, @name, @loader, @dest, @dist, @grade, @book);", conn);
+            "INSERT INTO dbo.Routes (RouteId, Name, LoaderId, DestinationId, DistanceKm, GradePercent, BookCycleMin, BookQueueMin, BookLoadMin, BookHaulMin, BookDumpMin, BookReturnMin) " +
+            "VALUES (@id, @name, @loader, @dest, @dist, @grade, @book, @queue, @load, @haul, @dump, @ret);", conn);
         cmd.Parameters.AddWithValue("@id", r.Id);
         cmd.Parameters.AddWithValue("@name", r.Name);
         cmd.Parameters.AddWithValue("@loader", r.LoaderId);
         cmd.Parameters.AddWithValue("@dest", r.DestinationId);
         cmd.Parameters.AddWithValue("@dist", (decimal)r.DistanceKm);
         cmd.Parameters.AddWithValue("@grade", (decimal)r.GradePercent);
-        cmd.Parameters.AddWithValue("@book", Math.Round((decimal)Scheduler.BookCycleMinutes(r), 2));
+        cmd.Parameters.AddWithValue("@book", queue + load + haul + dump + ret);
+        cmd.Parameters.AddWithValue("@queue", queue);
+        cmd.Parameters.AddWithValue("@load", load);
+        cmd.Parameters.AddWithValue("@haul", haul);
+        cmd.Parameters.AddWithValue("@dump", dump);
+        cmd.Parameters.AddWithValue("@ret", ret);
         await cmd.ExecuteNonQueryAsync();
     }
 }
@@ -827,15 +840,24 @@ static class Scheduler
     /// <summary>How many times ApplyCrusherGuard actually had to move a truck (history mode only; reset per run).</summary>
     public static int GuardFireCount;
 
-    /// <summary>Book cycle time at full payload, no slow-ramp, no underload noise.</summary>
-    public static double BookCycleMinutes(Route route)
+    /// <summary>Book cycle time broken into its five phases: full payload, no slow-ramp, no
+    /// underload noise. No _rng calls - safe to call anywhere without affecting reproducibility.</summary>
+    public readonly record struct BookPhases(double QueueMin, double LoadMin, double HaulMin, double DumpMin, double ReturnMin)
+    {
+        public double TotalMin => QueueMin + LoadMin + HaulMin + DumpMin + ReturnMin;
+    }
+
+    public static BookPhases BookCyclePhases(Route route)
     {
         var loadedSpeed = SpeedModel.LoadedSpeedKmh(route.GradePercent);
         var emptySpeed = SpeedModel.EmptySpeedKmh(route.GradePercent);
         var haul = route.DistanceKm / loadedSpeed * 60;
         var ret = route.DistanceKm / emptySpeed * 60;
-        return BookLoadMin + haul + BookDumpMin + ret + BookQueueMin;
+        return new BookPhases(BookQueueMin, BookLoadMin, haul, BookDumpMin, ret);
     }
+
+    /// <summary>Book cycle time at full payload, no slow-ramp, no underload noise.</summary>
+    public static double BookCycleMinutes(Route route) => BookCyclePhases(route).TotalMin;
 
     public static List<ScheduleRow> BuildShiftSchedules(
         Fleet fleet, DateTime shiftStart, DateTime shiftEnd, string shiftName, DateOnly shiftDate,

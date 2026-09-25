@@ -232,8 +232,23 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
   time — from `RouteBenchmarkCalculator`, computed over every cycle ever
   recorded, never the requested window, so it doesn't shift when the window
   does), and `phases` — for each of queue/load/haul/dump/return, `{
-  averageMin, benchmarkMin }` (window average alongside the same all-time
-  25th-percentile benchmark).
+  averageMin, benchmarkMin, bookMin }` (window average alongside the same
+  all-time 25th-percentile benchmark and the route's book time for that phase).
+- **`GET /api/bottlenecks`**: same `from`/`to`/`shift` params. Losses for
+  cycles in the window, against benchmarks computed over all data:
+  - `recoverable`: recoverable minutes (see below), `totalMin`,
+    `totalEquivalentTonnes`, `byPhase` (including `unattributed`), `byRoute`,
+    `byTruck`, `byLoader`.
+  - `overBook`: minutes over book, `totalMin`, `totalEquivalentTonnes`,
+    `byPhase`, and `byRoute` with each route's phase split.
+  - `underload`: `totalTonnes` and `byTruck` (cycles, underload tonnes,
+    average payload %).
+  - `biggestLosses`: the top 10 items by equivalent tonnes, drawn from
+    recoverable minutes by route and phase, minutes over book by route and
+    phase, and underload by truck. Each item has `measure`, `subject`,
+    `phase`, `nativeAmount`, `nativeUnit` and `equivalentTonnes`.
+  - `hotspots`: `top` (the 10 loader date-hours with the most excess queue
+    minutes) and `profile` (excess queue minutes by loader and hour of day).
 
 ### KPI formulas
 
@@ -285,6 +300,36 @@ for the same reason.
   plan total (it isn't the same as a truck that was scheduled and produced
   0).
 
+### Loss measures
+
+The three measures below overlap, so the API and the losses page report
+them separately and never add them together.
+
+- **Recoverable minutes**: for each cycle, total time minus its route's
+  25th-percentile (P25) total cycle time, floored at zero. The P25 comes from
+  all data, so a cycle's recoverable minutes don't change with the window.
+  Catches queue spikes, shift-change peaks and slow individual cycles. It
+  can't see slowness that affects every cycle on a route, because that
+  slowness is part of the route's P25.
+- **Minutes over book**: for each cycle, total time minus its route's book
+  cycle time, floored at zero. Catches whole-route slowness such as the
+  waste dump ramp.
+- **Phase attribution** (both minute measures): the cycle's gap is shared
+  across phases in proportion to how far each phase ran over its own
+  reference (the phase P25, or the phase book time). Phases under their
+  reference get nothing. If no phase is over, the gap goes to
+  `unattributed`. Phase shares always sum to the total.
+- **Underload tonnes**: for each cycle, truck capacity minus payload,
+  floored at zero. Cycle-time measures miss underloading because a light
+  load loads faster. Every truck shows some underload, since a normal load
+  runs at about 97% of capacity.
+- **Equivalent tonnes** (for ranking only): minutes times the route's own
+  rate in the window (route tonnes / route cycle minutes). It assumes saved
+  time would turn into hauling, which holds while loaders have spare
+  capacity (match factor below 1).
+- **Queue hotspots**: excess queue minutes, meaning each cycle's queue time
+  minus its loader's all-data P25 queue time, floored at zero.
+
 ## Web
 
 React frontend in `web/` (Vite, TypeScript, Tailwind CSS, TanStack Query,
@@ -308,8 +353,12 @@ The trucks slice adds a sortable roster table (`/trucks`,
 against `/api/trucks`, fleet-average row pinned at the top, cells more than
 10% worse than fleet highlighted) and a per-truck detail page (`/trucks/:name`,
 against `/api/trucks/{name}`: KPI tiles against the fleet average, planned vs
-actual tonnes per shift, delay minutes by reason, phase split). `/losses` is
-still a stub page until its endpoint exists. Set `VITE_API_BASE_URL` (see
+actual tonnes per shift, delay minutes by reason, phase split). The losses
+page (`/losses`, against `/api/bottlenecks`) shows the biggest losses ranked
+by equivalent tonnes, then recoverable minutes, minutes over book, underload
+by truck, and queue hotspots as a list and a loader x hour heatmap. The
+heatmap prints the value in each cell and has a screen-reader table beside
+it, and highlighted table cells carry a ▲ marker as well as colour. Set `VITE_API_BASE_URL` (see
 `web/.env.example`) to point a production build at a deployed API instead of
 the dev proxy.
 
@@ -320,8 +369,10 @@ the dev proxy.
 - **Destinations**: the three dump points (ROM pad and Crusher are Ore, Waste
   dump is Waste).
 - **Routes**: every loader x destination pair (9), each with its own distance,
-  grade and book cycle time (`BookCycleMin` — full payload, no slow ramp, no
-  noise; `Scheduler.BookCycleMinutes`, also used to build `Schedules`).
+  grade and book times: `BookQueueMin`, `BookLoadMin`, `BookHaulMin`,
+  `BookDumpMin`, `BookReturnMin` and `BookCycleMin` (the sum of the five).
+  Book times assume full payload, no slow ramp and no noise. They come from
+  `Scheduler.BookCyclePhases`, which also builds `Schedules`.
 - **Cycles**: one row per completed load -> haul -> dump -> return loop, with
   the truck's route and loader for that cycle.
 - **Delays**: one row per period a truck is out of production, planned or

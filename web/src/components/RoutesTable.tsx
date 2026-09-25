@@ -21,14 +21,14 @@ export function RoutesTable({ routes }: RoutesTableProps) {
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/60">
       <h2 className="px-3 pt-3 text-sm font-semibold text-slate-200">Routes</h2>
-      <p className="px-3 pb-2 text-xs text-slate-500">
+      <p className="px-3 pb-2 text-xs text-slate-400">
         Vs book compares this window's average cycle time to the route's book rate (full payload,
         no slow ramp). P25 is the route's all-time 25th-percentile cycle time, the benchmark used
         for recoverable minutes - it doesn't change with the date window.
       </p>
       <table className="w-full min-w-[820px] text-sm">
         <thead>
-          <tr className="border-b border-slate-800 text-left text-xs uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-800 text-left text-xs uppercase tracking-wide text-slate-400">
             <th className="px-3 py-2 font-medium">Route</th>
             <th className="px-3 py-2 font-medium">Destination</th>
             <th className="px-3 py-2 text-right font-medium">Distance (km)</th>
@@ -39,6 +39,7 @@ export function RoutesTable({ routes }: RoutesTableProps) {
             <th className="px-3 py-2 text-right font-medium">P25 (min)</th>
             <th className="px-3 py-2 text-right font-medium">Haul avg (min)</th>
             <th className="px-3 py-2 text-right font-medium">Haul P25 (min)</th>
+            <th className="px-3 py-2 text-right font-medium">Haul book (min)</th>
             <th className="px-3 py-2 text-right font-medium">Cycles</th>
             <th className="px-3 py-2 text-right font-medium">Tonnes</th>
           </tr>
@@ -54,12 +55,17 @@ export function RoutesTable({ routes }: RoutesTableProps) {
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtNumber(route.gradePercent, 1)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtNumber(route.bookCycleMin)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtNumber(route.averageCycleMin)}</td>
-                <td className={`px-3 py-2 text-right tabular-nums ${worse ? 'bg-red-950/50 text-red-300' : 'text-slate-300'}`}>
+                <td
+                  className={`px-3 py-2 text-right tabular-nums ${worse ? 'bg-red-950/50 text-red-300' : 'text-slate-300'}`}
+                  title={worse ? `${fmtSignedPercentFraction(route.vsBook)} worse than book` : undefined}
+                >
+                  {worse && <span aria-hidden="true">▲ </span>}
                   {fmtSignedPercentFraction(route.vsBook)}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtNumber(route.benchmarkCycleMin)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-400">{fmtNumber(route.phases.haul.averageMin)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-400">{fmtNumber(route.phases.haul.benchmarkMin)}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-slate-400">{fmtNumber(route.phases.haul.bookMin)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtInt(route.cycles)}</td>
                 <td className="px-3 py-2 text-right tabular-nums text-slate-300">{fmtTonnes(route.tonnes)}</td>
               </tr>

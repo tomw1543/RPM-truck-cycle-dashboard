@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Route, Routes } from 'react-router'
 import { useMeta } from './api/hooks'
 import { Header } from './components/Header'
-import { NotAvailable } from './pages/NotAvailable'
+import { Losses } from './pages/Losses'
 import { Overview } from './pages/Overview'
 import { TruckDetail } from './pages/TruckDetail'
 import { Trucks } from './pages/Trucks'
@@ -18,7 +18,7 @@ function App() {
         <Route path="/" element={<Overview live={live} />} />
         <Route path="/trucks" element={<Trucks live={live} />} />
         <Route path="/trucks/:name" element={<TruckDetail live={live} />} />
-        <Route path="/losses" element={<NotAvailable title="Losses" />} />
+        <Route path="/losses" element={<Losses live={live} />} />
       </Routes>
     </div>
   )

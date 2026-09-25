@@ -144,6 +144,7 @@ export interface TruckWindowParams {
 export interface RoutePhase {
   averageMin: number | null
   benchmarkMin: number | null
+  bookMin: number
 }
 
 /** RouteEndpoints.RoutePhasesData. */
@@ -177,4 +178,103 @@ export interface RouteData {
 /** RouteEndpoints.RoutesListData. */
 export interface RoutesListData {
   routes: RouteData[]
+}
+
+/** BottleneckEndpoints.PhaseMinutesData - minutes attributed to each phase (see CONTEXT.md's
+ * Phase attribution), plus an Unattributed bucket for cycles whose gap has no phase excess.
+ * Shares + unattributed always sum to the measure's totalMin. */
+export interface PhaseMinutes {
+  queue: number
+  load: number
+  haul: number
+  dump: number
+  return: number
+  unattributed: number
+}
+
+/** BottleneckEndpoints.NamedAmountData - one route/truck/loader's share of recoverable minutes.
+ * equivalentTonnes is null only if the calculator couldn't rate its route (shouldn't happen for
+ * recoverable/over-book minutes, since those minutes come from window cycles that do have a
+ * route rate). */
+export interface NamedAmount {
+  name: string
+  minutes: number
+  equivalentTonnes: number | null
+}
+
+/** BottleneckEndpoints.RoutePhaseMinutesData - one route's over-book (or recoverable-by-route)
+ * minutes with its own phase split. */
+export interface RoutePhaseMinutes {
+  routeName: string
+  totalMin: number
+  equivalentTonnes: number | null
+  phases: PhaseMinutes
+}
+
+export interface RecoverableData {
+  totalMin: number
+  totalEquivalentTonnes: number
+  byPhase: PhaseMinutes
+  byRoute: NamedAmount[]
+  byTruck: NamedAmount[]
+  byLoader: NamedAmount[]
+}
+
+export interface OverBookData {
+  totalMin: number
+  totalEquivalentTonnes: number
+  byPhase: PhaseMinutes
+  byRoute: RoutePhaseMinutes[]
+}
+
+export interface TruckUnderload {
+  truckName: string
+  cycles: number
+  underloadTonnes: number
+  averagePayloadPercent: number | null
+}
+
+export interface UnderloadData {
+  totalTonnes: number
+  byTruck: TruckUnderload[]
+}
+
+/** BottleneckEndpoints.LossItemData. measure is one of "recoverable" | "overBook" | "underload" -
+ * the three measures overlap and must never be added together. nativeUnit is "min" or "t". */
+export interface LossItem {
+  measure: 'recoverable' | 'overBook' | 'underload'
+  subject: string
+  phase: string | null
+  nativeAmount: number
+  nativeUnit: 'min' | 't'
+  equivalentTonnes: number
+}
+
+export interface HotspotRow {
+  loaderName: string
+  dateHour: string
+  excessMin: number
+  cycles: number
+  averageQueueMin: number
+}
+
+export interface ProfileCell {
+  loaderName: string
+  hourOfDay: number
+  excessMin: number
+  cycles: number
+}
+
+export interface HotspotsData {
+  top: HotspotRow[]
+  profile: ProfileCell[]
+}
+
+/** BottleneckEndpoints.BottlenecksData - GET /api/bottlenecks. */
+export interface BottlenecksData {
+  recoverable: RecoverableData
+  overBook: OverBookData
+  underload: UnderloadData
+  biggestLosses: LossItem[]
+  hotspots: HotspotsData
 }

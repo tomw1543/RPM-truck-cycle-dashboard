@@ -5,7 +5,7 @@ namespace HaulCycle.Api.Endpoints;
 
 /// <summary>One phase's window average alongside its all-time benchmark (see
 /// RouteBenchmarkCalculator).</summary>
-public sealed record RoutePhaseData(decimal? AverageMin, decimal? BenchmarkMin);
+public sealed record RoutePhaseData(decimal? AverageMin, decimal? BenchmarkMin, decimal BookMin);
 
 public sealed record RoutePhasesData(
     RoutePhaseData Queue,
@@ -110,11 +110,11 @@ public static class RouteEndpoints
             vsBook,
             benchmark?.TotalCycleMin,
             new RoutePhasesData(
-                new RoutePhaseData(averages.Queue, phases?.QueueMin),
-                new RoutePhaseData(averages.Load, phases?.LoadMin),
-                new RoutePhaseData(averages.Haul, phases?.HaulMin),
-                new RoutePhaseData(averages.Dump, phases?.DumpMin),
-                new RoutePhaseData(averages.Return, phases?.ReturnMin)));
+                new RoutePhaseData(averages.Queue, phases?.QueueMin, route.BookQueueMin),
+                new RoutePhaseData(averages.Load, phases?.LoadMin, route.BookLoadMin),
+                new RoutePhaseData(averages.Haul, phases?.HaulMin, route.BookHaulMin),
+                new RoutePhaseData(averages.Dump, phases?.DumpMin, route.BookDumpMin),
+                new RoutePhaseData(averages.Return, phases?.ReturnMin, route.BookReturnMin)));
     }
 
     private static (decimal? Queue, decimal? Load, decimal? Haul, decimal? Dump, decimal? Return) PhaseAverages(

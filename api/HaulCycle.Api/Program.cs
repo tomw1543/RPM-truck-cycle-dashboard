@@ -61,6 +61,7 @@ app.MapMetaEndpoints();
 app.MapFleetEndpoints();
 app.MapTruckEndpoints();
 app.MapRouteEndpoints();
+app.MapBottleneckEndpoints();
 
 app.Run();
 return 0;
