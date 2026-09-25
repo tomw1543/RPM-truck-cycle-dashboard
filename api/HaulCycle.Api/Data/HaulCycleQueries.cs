@@ -5,6 +5,11 @@ namespace HaulCycle.Api.Data;
 
 public sealed record FleetCounts(int Trucks, int Loaders, int Routes, int Destinations);
 
+/// <summary>One row from dbo.Trucks, for endpoints that need the full truck roster (including
+/// trucks with zero cycles in the requested window) rather than only the trucks that show up
+/// in vw_CycleDetail.</summary>
+public sealed record TruckInfo(string Name, decimal CapacityTonnes);
+
 public sealed record MetaInfo(DateTime? AsOf, DateOnly? FirstDate, DateOnly? LastDate, FleetCounts Counts);
 
 /// <summary>
@@ -58,6 +63,16 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
                 (SELECT COUNT(*) FROM dbo.Destinations) AS Destinations;
             """;
         return await conn.QuerySingleAsync<FleetCounts>(new CommandDefinition(sql, cancellationToken: ct));
+    }
+
+    /// <summary>Every truck on the roster, ordered by name - includes trucks with no cycles in
+    /// any window, so callers building one row per truck don't silently drop a quiet truck.</summary>
+    public async Task<IReadOnlyList<TruckInfo>> GetTrucksAsync(CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = "SELECT Name, CapacityTonnes FROM dbo.Trucks ORDER BY Name;";
+        var rows = await conn.QueryAsync<TruckInfo>(new CommandDefinition(sql, cancellationToken: ct));
+        return rows.AsList();
     }
 
     public async Task<IReadOnlyList<CycleRow>> GetCyclesAsync(DateTime from, DateTime to, string? shift, CancellationToken ct = default)

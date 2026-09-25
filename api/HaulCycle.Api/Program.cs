@@ -59,6 +59,7 @@ app.UseOutputCache();
 app.MapHealthEndpoints();
 app.MapMetaEndpoints();
 app.MapFleetEndpoints();
+app.MapTruckEndpoints();
 
 app.Run();
 return 0;

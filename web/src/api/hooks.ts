@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiGet } from './client'
-import type { Envelope, FleetSummary, FleetSummaryParams, Meta } from './types'
+import { ApiError, apiGet } from './client'
+import type { Envelope, FleetSummary, FleetSummaryParams, Meta, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
 
 /** Matches the server's 30s output-cache policy on /api/meta and /api/fleet/summary
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
@@ -24,5 +24,33 @@ export function useFleetSummary(params: FleetSummaryParams, live: boolean) {
         shift: params.shift,
       }),
     refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+export function useTrucks(params: TruckWindowParams, live: boolean) {
+  return useQuery({
+    queryKey: ['trucks', params],
+    queryFn: () =>
+      apiGet<Envelope<TrucksListData>>('/api/trucks', {
+        from: params.from,
+        to: params.to,
+        shift: params.shift,
+      }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+export function useTruckDetail(name: string, params: TruckWindowParams, live: boolean) {
+  return useQuery({
+    queryKey: ['truck-detail', name, params],
+    queryFn: () =>
+      apiGet<Envelope<TruckDetailData>>(`/api/trucks/${encodeURIComponent(name)}`, {
+        from: params.from,
+        to: params.to,
+        shift: params.shift,
+      }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+    // A 404 (unknown truck name) won't resolve on retry - don't burn requests on it.
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   })
 }

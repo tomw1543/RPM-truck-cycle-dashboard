@@ -75,3 +75,65 @@ export interface FleetSummaryParams {
   to?: string
   shift?: Shift
 }
+
+/** TruckEndpoints.TruckKpis. A row is either one truck's own KPIs, or (name = "Fleet average")
+ * the fleet's rates alongside cycles/tonnes divided down to a per-truck average. Ratios stay
+ * 0-1 fractions; averagePayloadPercent is 0-100, like PhaseSplit's percents. */
+export interface TruckKpis {
+  name: string
+  capacityTonnes: number
+  cycles: number
+  tonnes: number
+  tonnesPerOperatingHour: number | null
+  tonnesPerCalendarHour: number | null
+  averageCycleMin: number | null
+  averagePayloadPercent: number | null
+  cyclesPerOperatingHour: number | null
+  availability: number | null
+  utilisation: number | null
+  effectiveUtilisation: number | null
+  idlePercent: number | null
+}
+
+/** TruckEndpoints.TrucksListData. */
+export interface TrucksListData {
+  fleet: TruckKpis
+  trucks: TruckKpis[]
+}
+
+/** TruckEndpoints.DelayReasonData. Minutes are clipped to the requested window (and shift). */
+export interface DelayReason {
+  reason: string
+  isPlanned: boolean
+  count: number
+  minutes: number
+}
+
+/** TruckEndpoints.ShiftSeriesData - one truck's plan vs actual for one shift.
+ * unavailableReason is set (and routeName/plannedTonnes null) when the truck had no schedule
+ * that shift. */
+export interface ShiftSeries {
+  shiftDate: string
+  shiftName: string
+  routeName: string | null
+  unavailableReason: string | null
+  plannedTonnes: number | null
+  actualTonnes: number
+  cycles: number
+  averagePayloadPercent: number | null
+}
+
+/** TruckEndpoints.TruckDetailData. */
+export interface TruckDetailData {
+  truck: TruckKpis
+  fleet: TruckKpis
+  phaseSplit: PhaseSplit | null
+  delaysByReason: DelayReason[]
+  shifts: ShiftSeries[]
+}
+
+export interface TruckWindowParams {
+  from?: string
+  to?: string
+  shift?: Shift
+}

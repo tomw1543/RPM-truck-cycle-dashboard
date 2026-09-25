@@ -25,7 +25,7 @@ export function Header({ asOf, live, onLiveChange }: HeaderProps) {
           <NavLink to="/" end className={navLinkClass}>
             Overview
           </NavLink>
-          <NavLink to="/trucks/T01" className={navLinkClass}>
+          <NavLink to="/trucks" className={navLinkClass}>
             Trucks
           </NavLink>
           <NavLink to="/losses" className={navLinkClass}>

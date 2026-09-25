@@ -192,6 +192,30 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
   `matchFactor`, and `planVsActual` (`actualTonnes`/`plannedTonnes`/
   `percentOfPlan` overall and per `byDestination` entry, plus
   `completeShiftsOnly` and `excludedShiftCount` — see below).
+- **`GET /api/trucks`** — same `from`/`to`/`shift` params as
+  `/api/fleet/summary`. `data` is `{ fleet, trucks[] }`: one row per truck
+  from `dbo.Trucks` (trucks with zero cycles in the window still appear),
+  plus a `fleet` row (`name: "Fleet average"`) alongside them. Each row has
+  `name`, `capacityTonnes`, `cycles`, `tonnes`, `tonnesPerOperatingHour`,
+  `tonnesPerCalendarHour`, `averageCycleMin`, `averagePayloadPercent` (0–100),
+  `cyclesPerOperatingHour`, `availability`, `utilisation`,
+  `effectiveUtilisation`, `idlePercent`. On the `fleet` row, `cycles` and
+  `tonnes` are the fleet total divided by truck count (so it reads like an
+  average truck); every other field is the same fleet-wide rate
+  `/api/fleet/summary` reports, not an average of the per-truck rates.
+- **`GET /api/trucks/{name}`** — one truck's detail (name match is
+  case-insensitive; the response uses the canonical name). `404` with a
+  `ProblemDetails` body if no truck has that name. `data` is `{ truck, fleet,
+  phaseSplit, delaysByReason, shifts }`: `truck`/`fleet` are the same shape
+  as an `/api/trucks` row; `phaseSplit` is that truck's load/haul/dump/
+  return/queue split; `delaysByReason` is `{ reason, isPlanned, count,
+  minutes }[]` sorted by minutes descending, with each delay's minutes
+  clipped to the window (and shift filter) the way availability clips delay
+  time; `shifts` is `{ shiftDate, shiftName, routeName, unavailableReason,
+  plannedTonnes, actualTonnes, cycles, averagePayloadPercent }[]`, one row
+  per shift in the window on the same shift-grained basis as plan vs actual
+  (unavailable shifts have `routeName`/`plannedTonnes` null and
+  `unavailableReason` set instead).
 
 ### KPI formulas
 
@@ -260,9 +284,14 @@ since the frontend only needs its own source to type-check and bundle. The
 window (date range + shift), not just the KPIs, lives in the URL's query
 string, so a link to the overview page carries its filters with it. The
 first slice covers the fleet overview screen (`/`) against
-`/api/fleet/summary`; `/trucks/:id` and `/losses` are stub pages until
-those endpoints exist. Set `VITE_API_BASE_URL` (see `web/.env.example`) to
-point a production build at a deployed API instead of the dev proxy.
+`/api/fleet/summary`. The trucks slice adds a sortable roster table (`/trucks`,
+against `/api/trucks`, fleet-average row pinned at the top, cells more than
+10% worse than fleet highlighted) and a per-truck detail page (`/trucks/:name`,
+against `/api/trucks/{name}`: KPI tiles against the fleet average, planned vs
+actual tonnes per shift, delay minutes by reason, phase split). `/losses` is
+still a stub page until its endpoint exists. Set `VITE_API_BASE_URL` (see
+`web/.env.example`) to point a production build at a deployed API instead of
+the dev proxy.
 
 ## Data model
 
