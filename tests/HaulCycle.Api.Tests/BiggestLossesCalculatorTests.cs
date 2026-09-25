@@ -23,7 +23,8 @@ public class BiggestLossesCalculatorTests
 
         var underload = new UnderloadCalculator.Result(
             50m,
-            [new UnderloadCalculator.TruckUnderload("T07", 10, 50m, 80m)]);
+            [new UnderloadCalculator.TruckUnderload("T07", 10, 50m, 80m)],
+            97m);
 
         var items = BiggestLossesCalculator.Calculate(recoverable, overBook, underload, rates);
 
@@ -43,7 +44,7 @@ public class BiggestLossesCalculatorTests
             [new RecoverableMinutesCalculator.RoutePhaseMinutes("Unrated", 10m, null,
                 new PhaseAttributionCalculator.PhaseAmounts(10m, 0m, 0m, 0m, 0m, 0m))]);
         var overBook = new MinutesOverBookCalculator.Result(0m, 0m, PhaseAttributionCalculator.Zero, []);
-        var underload = new UnderloadCalculator.Result(0m, []);
+        var underload = new UnderloadCalculator.Result(0m, [], 97m);
 
         var items = BiggestLossesCalculator.Calculate(recoverable, overBook, underload, new Dictionary<string, decimal>());
 

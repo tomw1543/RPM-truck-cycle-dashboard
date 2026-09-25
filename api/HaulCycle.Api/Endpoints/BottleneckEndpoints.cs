@@ -25,7 +25,7 @@ public sealed record OverBookData(
 
 public sealed record TruckUnderloadData(string TruckName, int Cycles, decimal UnderloadTonnes, decimal? AveragePayloadPercent);
 
-public sealed record UnderloadData(decimal TotalTonnes, IReadOnlyList<TruckUnderloadData> ByTruck);
+public sealed record UnderloadData(decimal TotalTonnes, IReadOnlyList<TruckUnderloadData> ByTruck, decimal BaselinePayloadPercent);
 
 public sealed record LossItemData(string Measure, string Subject, string? Phase, decimal NativeAmount, string NativeUnit, decimal EquivalentTonnes);
 
@@ -80,7 +80,7 @@ public static class BottleneckEndpoints
 
             var recoverable = RecoverableMinutesCalculator.Calculate(windowCycles, benchmarks, ratesByRoute);
             var overBook = MinutesOverBookCalculator.Calculate(windowCycles, routesByName, ratesByRoute);
-            var underload = UnderloadCalculator.Calculate(windowCycles);
+            var underload = UnderloadCalculator.Calculate(windowCycles, benchmarkCycles);
             var biggestLosses = BiggestLossesCalculator.Calculate(recoverable, overBook, underload, ratesByRoute);
             var hotspots = QueueHotspotsCalculator.Calculate(benchmarkCycles, windowCycles);
 
@@ -116,7 +116,7 @@ public static class BottleneckEndpoints
             r.ByRoute.Select(x => new RoutePhaseMinutesData(x.RouteName, x.TotalMin, x.EquivalentTonnes, MapPhase(x.Phases))).ToList());
 
     private static UnderloadData MapUnderload(UnderloadCalculator.Result r) =>
-        new(r.TotalTonnes, r.ByTruck.Select(t => new TruckUnderloadData(t.TruckName, t.Cycles, t.UnderloadTonnes, t.AveragePayloadPercent)).ToList());
+        new(r.TotalTonnes, r.ByTruck.Select(t => new TruckUnderloadData(t.TruckName, t.Cycles, t.UnderloadTonnes, t.AveragePayloadPercent)).ToList(), r.BaselinePayloadPercent);
 
     private static NamedAmountData MapAmount(RecoverableMinutesCalculator.NamedAmount a) => new(a.Name, a.Minutes, a.EquivalentTonnes);
 
@@ -127,7 +127,7 @@ public static class BottleneckEndpoints
         new(
             new RecoverableData(0m, 0m, ZeroPhase, [], [], []),
             new OverBookData(0m, 0m, ZeroPhase, []),
-            new UnderloadData(0m, []),
+            new UnderloadData(0m, [], 0m),
             [],
             new HotspotsData([], []));
 

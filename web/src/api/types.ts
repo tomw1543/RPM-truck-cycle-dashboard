@@ -237,6 +237,7 @@ export interface TruckUnderload {
 export interface UnderloadData {
   totalTonnes: number
   byTruck: TruckUnderload[]
+  baselinePayloadPercent: number
 }
 
 /** BottleneckEndpoints.LossItemData. measure is one of "recoverable" | "overBook" | "underload" -

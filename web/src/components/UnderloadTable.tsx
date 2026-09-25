@@ -16,8 +16,8 @@ export function UnderloadTable({ data, windowQuery }: UnderloadTableProps) {
         Underload <span className="font-normal text-slate-400">({fmtTonnes(data.totalTonnes)})</span>
       </h2>
       <p className="px-3 pb-2 text-xs text-slate-400">
-        Tonnes lost to part-filled trucks (capacity minus payload per cycle, floored at zero) - missed by cycle-time
-        measures, since a lighter load also loads faster.
+        Tonnes below the fleet's typical load (median payload {fmtNumber(data.baselinePayloadPercent, 1)}% of
+        capacity), missed by cycle-time measures, since a lighter load also loads faster.
       </p>
       {sorted.length === 0 ? (
         <p className="px-3 pb-4 text-sm text-slate-400">No underload in this window.</p>

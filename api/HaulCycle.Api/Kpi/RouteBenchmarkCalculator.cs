@@ -44,7 +44,12 @@ public static class RouteBenchmarkCalculator
     /// <summary>PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY x): linear interpolation between the
     /// two nearest ranks over the sorted values, matching SQL Server exactly. Null for an empty
     /// input; a single value is its own 25th percentile.</summary>
-    public static decimal? Percentile25(IEnumerable<decimal> values)
+    public static decimal? Percentile25(IEnumerable<decimal> values) => Percentile(values, 0.25m);
+
+    /// <summary>PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY x): linear interpolation between the two
+    /// nearest ranks over the sorted values, matching SQL Server exactly. Null for an empty input;
+    /// a single value is its own percentile at any p.</summary>
+    public static decimal? Percentile(IEnumerable<decimal> values, decimal p)
     {
         var sorted = values.OrderBy(v => v).ToList();
         if (sorted.Count == 0)
@@ -53,7 +58,7 @@ public static class RouteBenchmarkCalculator
             return sorted[0];
 
         // PERCENTILE_CONT rank (0-based): p * (n - 1).
-        var rank = 0.25m * (sorted.Count - 1);
+        var rank = p * (sorted.Count - 1);
         var lowerIndex = (int)Math.Floor(rank);
         var upperIndex = (int)Math.Ceiling(rank);
         if (lowerIndex == upperIndex)

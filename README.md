@@ -241,8 +241,9 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
     `byTruck`, `byLoader`.
   - `overBook`: minutes over book, `totalMin`, `totalEquivalentTonnes`,
     `byPhase`, and `byRoute` with each route's phase split.
-  - `underload`: `totalTonnes` and `byTruck` (cycles, underload tonnes,
-    average payload %).
+  - `underload`: `totalTonnes`, `byTruck` (cycles, underload tonnes,
+    average payload %) and `baselinePayloadPercent` (the all-data median
+    payload % used as the baseline fill).
   - `biggestLosses`: the top 10 items by equivalent tonnes, drawn from
     recoverable minutes by route and phase, minutes over book by route and
     phase, and underload by truck. Each item has `measure`, `subject`,
@@ -319,10 +320,12 @@ them separately and never add them together.
   reference (the phase P25, or the phase book time). Phases under their
   reference get nothing. If no phase is over, the gap goes to
   `unattributed`. Phase shares always sum to the total.
-- **Underload tonnes**: for each cycle, truck capacity minus payload,
-  floored at zero. Cycle-time measures miss underloading because a light
-  load loads faster. Every truck shows some underload, since a normal load
-  runs at about 97% of capacity.
+- **Underload tonnes**: the baseline fill is the median payload % of
+  capacity over all data. For each cycle, baseline fill (as a fraction of
+  capacity) minus payload, floored at zero. Cycle-time measures miss
+  underloading because a light load loads faster. Trucks near the fleet's
+  typical fill show close to zero underload; the measure isolates trucks
+  that run well below it.
 - **Equivalent tonnes** (for ranking only): minutes times the route's own
   rate in the window (route tonnes / route cycle minutes). It assumes saved
   time would turn into hauling, which holds while loaders have spare
