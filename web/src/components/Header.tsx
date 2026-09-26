@@ -31,6 +31,9 @@ export function Header({ asOf, live, onLiveChange }: HeaderProps) {
           <NavLink to="/losses" className={navLinkClass}>
             Losses
           </NavLink>
+          <NavLink to="/schedule" className={navLinkClass}>
+            Schedule
+          </NavLink>
         </nav>
 
         <label className="ml-auto flex items-center gap-2 text-sm text-slate-400">

@@ -62,6 +62,7 @@ app.MapFleetEndpoints();
 app.MapTruckEndpoints();
 app.MapRouteEndpoints();
 app.MapBottleneckEndpoints();
+app.MapScheduleEndpoints();
 
 app.Run();
 return 0;

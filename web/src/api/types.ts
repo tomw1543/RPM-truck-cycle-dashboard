@@ -279,3 +279,73 @@ export interface BottlenecksData {
   biggestLosses: LossItem[]
   hotspots: HotspotsData
 }
+
+/** ScheduleEndpoints.ReasonCountData - one unavailability reason's count within a shift. */
+export interface ReasonCount {
+  reason: string
+  count: number
+}
+
+/** ScheduleEndpoints.TruckComplianceData - one truck's plan vs actual for one shift.
+ * unavailableReason set (and routeName/plannedTonnes null) when the truck had no schedule that
+ * shift; belowTypical is only ever true on a complete shift. percentOfPlan/averagePayloadPercent
+ * follow the same conventions as elsewhere (0-1 fraction, 0-100 scale respectively). */
+export interface TruckCompliance {
+  truckName: string
+  routeName: string | null
+  loaderName: string | null
+  unavailableReason: string | null
+  plannedTonnes: number | null
+  actualTonnes: number
+  plannedCycles: number | null
+  actualCycles: number
+  percentOfPlan: number | null
+  averagePayloadPercent: number | null
+  belowTypical: boolean
+}
+
+/** ScheduleEndpoints.ShiftComplianceData - one shift's fleet-wide plan vs actual, plus its
+ * per-truck breakdown. belowTypical only applies to complete shifts. */
+export interface ShiftCompliance {
+  shiftDate: string
+  shiftName: string
+  isComplete: boolean
+  plannedTonnes: number | null
+  actualTonnes: number
+  plannedCycles: number | null
+  actualCycles: number
+  percentOfPlan: number | null
+  belowTypical: boolean
+  unavailableCount: number
+  unavailableReasons: ReasonCount[]
+  trucks: TruckCompliance[]
+}
+
+/** ScheduleEndpoints.ShiftSummaryData - one shift referenced from the summary (best/worst). */
+export interface ShiftSummaryRef {
+  shiftDate: string
+  shiftName: string
+  percentOfPlan: number
+}
+
+/** ScheduleEndpoints.ComplianceSummaryData - complete-shift totals for the window. baseline is
+ * the tonnes-weighted percent of plan across complete shifts, identical to
+ * /api/fleet/summary's planVsActual.percentOfPlan for the same window. */
+export interface ComplianceSummary {
+  plannedTonnes: number | null
+  actualTonnes: number
+  plannedCycles: number | null
+  actualCycles: number
+  percentOfPlan: number | null
+  baseline: number | null
+  shiftCount: number
+  best: ShiftSummaryRef | null
+  worst: ShiftSummaryRef | null
+}
+
+/** ScheduleEndpoints.ScheduleComplianceData - GET /api/schedule/compliance. Shifts are ordered
+ * newest first. */
+export interface ScheduleComplianceData {
+  summary: ComplianceSummary
+  shifts: ShiftCompliance[]
+}

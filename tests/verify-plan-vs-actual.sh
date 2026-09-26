@@ -130,4 +130,105 @@ check_window "30day" "from=$(date -d '-30 days' +%F 2>/dev/null || date -v-30d +
 check_window "shift-Day" "shift=Day"
 check_window "shift-Night" "shift=Night"
 
+# /api/schedule/compliance reuses PlanVsActualCalculator for its baseline and summary totals
+# (ScheduleComplianceCalculator.cs), so this check reconciles it against /api/fleet/summary's
+# planVsActual for the *same* window, and separately checks a handful of individual shifts'
+# planned/actual tonnes against direct SQL - a defect here would mean the shift-grained rows
+# don't add up to the same totals the fleet summary reports.
+check_compliance() {
+  local label="$1" query="$2"
+
+  local fleet_url="${API_BASE}/api/fleet/summary"
+  local compliance_url="${API_BASE}/api/schedule/compliance"
+  if [ -n "$query" ]; then
+    fleet_url="${fleet_url}?${query}"
+    compliance_url="${compliance_url}?${query}"
+  fi
+
+  # Relative paths (not mktemp's /tmp) so the Windows-native python invoked below can read them
+  # too - this script runs under Git Bash, where /tmp doesn't resolve for a native python.exe.
+  local fleet_file="./.verify-fleet.$$.json" compliance_file="./.verify-compliance.$$.json"
+  curl -sf "$fleet_url" > "$fleet_file" || { echo "FAIL [$label]: curl to $fleet_url failed"; exit 1; }
+  curl -sf "$compliance_url" > "$compliance_file" || { echo "FAIL [$label]: curl to $compliance_url failed"; exit 1; }
+
+  python -c "
+import json, sys
+fleet = json.load(open('$fleet_file'))['data']['planVsActual']
+compliance = json.load(open('$compliance_file'))['data']['summary']
+
+def close(a, b, tol=1e-9):
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= tol
+
+ok = True
+if not close(fleet['percentOfPlan'], compliance['baseline']):
+    print(f'MISMATCH [$label]: fleet percentOfPlan={fleet[\"percentOfPlan\"]} vs compliance baseline={compliance[\"baseline\"]}')
+    ok = False
+if not close(fleet['percentOfPlan'], compliance['percentOfPlan']):
+    print(f'MISMATCH [$label]: fleet percentOfPlan={fleet[\"percentOfPlan\"]} vs compliance percentOfPlan={compliance[\"percentOfPlan\"]}')
+    ok = False
+if not close(fleet['actualTonnes'], compliance['actualTonnes'], tol=0.05):
+    print(f'MISMATCH [$label]: fleet actualTonnes={fleet[\"actualTonnes\"]} vs compliance actualTonnes={compliance[\"actualTonnes\"]}')
+    ok = False
+if not close(fleet['plannedTonnes'], compliance['plannedTonnes'], tol=0.05):
+    print(f'MISMATCH [$label]: fleet plannedTonnes={fleet[\"plannedTonnes\"]} vs compliance plannedTonnes={compliance[\"plannedTonnes\"]}')
+    ok = False
+if not ok:
+    sys.exit(1)
+print('  OK (compliance summary matches fleet planVsActual) [$label]')
+"
+
+  # Spot-check the first shift row's planned/actual tonnes against direct SQL.
+  local shift_date shift_name api_planned api_actual
+  read -r shift_date shift_name api_planned api_actual <<PYEOF
+$(python -c "
+import json
+d = json.load(open('$compliance_file'))
+shifts = d['data']['shifts']
+if not shifts:
+    print('NONE NONE 0 0')
+else:
+    s = shifts[0]
+    print(s['shiftDate'], s['shiftName'], s['plannedTonnes'], s['actualTonnes'])
+")
+PYEOF
+  rm -f "$fleet_file" "$compliance_file"
+
+  if [ "$shift_date" = "NONE" ]; then
+    echo "  (no shifts in window, skipping per-shift SQL spot-check) [$label]"
+    return
+  fi
+
+  local sql
+  sql=$(cat <<SQL
+SELECT
+  CAST(ISNULL((SELECT SUM(PayloadTonnes) FROM dbo.vw_CycleDetail WHERE ShiftDate = '$shift_date' AND ShiftName = '$shift_name'), 0) AS DECIMAL(12,1)) AS ActualTonnes,
+  CAST(ISNULL((SELECT SUM(PlannedTonnes) FROM dbo.vw_ScheduleDetail WHERE ShiftDate = '$shift_date' AND ShiftName = '$shift_name'), 0) AS DECIMAL(12,1)) AS PlannedTonnes;
+SQL
+)
+  local result sql_actual sql_planned
+  result="$(sqlcmd_query "$sql")"
+  read -r sql_actual sql_planned <<< "$(echo "$result" | sed -n '1p')"
+
+  echo "  [$label] shift=$shift_date $shift_name  API: planned=$api_planned actual=$api_actual  SQL: planned=$sql_planned actual=$sql_actual"
+
+  python -c "
+api_planned = $api_planned
+api_actual = $api_actual
+sql_planned = $sql_planned
+sql_actual = $sql_actual
+tol = 0.2
+if abs(api_planned - sql_planned) > tol or abs(api_actual - sql_actual) > tol:
+    print('MISMATCH [$label]: per-shift planned/actual tonnes do not match direct SQL')
+    exit(1)
+print('  OK (per-shift tonnes match direct SQL) [$label]')
+"
+}
+
+check_compliance "compliance-default-7day" ""
+check_compliance "compliance-shift-Day" "shift=Day"
+
 echo "All plan-vs-actual reconciliation checks passed."

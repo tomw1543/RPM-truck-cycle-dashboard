@@ -4,6 +4,7 @@ import { useMeta } from './api/hooks'
 import { Header } from './components/Header'
 import { Losses } from './pages/Losses'
 import { Overview } from './pages/Overview'
+import { Schedule } from './pages/Schedule'
 import { TruckDetail } from './pages/TruckDetail'
 import { Trucks } from './pages/Trucks'
 
@@ -19,6 +20,7 @@ function App() {
         <Route path="/trucks" element={<Trucks live={live} />} />
         <Route path="/trucks/:name" element={<TruckDetail live={live} />} />
         <Route path="/losses" element={<Losses live={live} />} />
+        <Route path="/schedule" element={<Schedule live={live} />} />
       </Routes>
     </div>
   )

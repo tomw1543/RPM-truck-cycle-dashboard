@@ -250,6 +250,25 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
     `phase`, `nativeAmount`, `nativeUnit` and `equivalentTonnes`.
   - `hotspots`: `top` (the 10 loader date-hours with the most excess queue
     minutes) and `profile` (excess queue minutes by loader and hour of day).
+- **`GET /api/schedule/compliance`**: same `from`/`to`/`shift` params, on the
+  same shift-grained basis as plan vs actual. `data.summary` is the
+  complete-shift totals for the window: `plannedTonnes`, `actualTonnes`,
+  `plannedCycles`, `actualCycles`, `percentOfPlan`, `baseline` (the
+  tonnes-weighted percent of plan across complete shifts, identical to
+  `/api/fleet/summary`'s `planVsActual.percentOfPlan` for the same window),
+  `shiftCount`, and `best`/`worst` (`{ shiftDate, shiftName, percentOfPlan }`,
+  null if no complete shift has a plan). `data.shifts` is one row per shift,
+  newest first: `shiftDate`, `shiftName`, `isComplete`, `plannedTonnes`,
+  `actualTonnes`, `plannedCycles`, `actualCycles`, `percentOfPlan`,
+  `belowTypical` (only ever true on a complete shift, when `percentOfPlan` is
+  more than 5 points under `baseline`), `unavailableCount`,
+  `unavailableReasons` (`{ reason, count }[]`), and `trucks`, one row per
+  truck, sorted by name: `truckName`, `routeName`, `loaderName`,
+  `unavailableReason`, `plannedTonnes`, `actualTonnes`, `plannedCycles`,
+  `actualCycles`, `percentOfPlan`, `averagePayloadPercent`, `belowTypical`
+  (same rule with a 10-point margin, because a single truck varies more than
+  the whole shift). An available truck with zero cycles still appears, with zeros; an
+  unavailable truck has null plan fields and is never `belowTypical`.
 
 ### KPI formulas
 
@@ -361,7 +380,12 @@ page (`/losses`, against `/api/bottlenecks`) shows the biggest losses ranked
 by equivalent tonnes, then recoverable minutes, minutes over book, underload
 by truck, and queue hotspots as a list and a loader x hour heatmap. The
 heatmap prints the value in each cell and has a screen-reader table beside
-it, and highlighted table cells carry a ▲ marker as well as colour. Set `VITE_API_BASE_URL` (see
+it, and highlighted table cells carry a ▲ marker as well as colour. The
+schedule page (`/schedule`, against `/api/schedule/compliance`) shows
+summary tiles (totals, percent of plan, best/worst shift), a planned-vs-actual
+tonnes chart per shift, and a shift table (newest first, expandable to a
+per-truck breakdown) with below-typical shifts and truck-shifts marked the
+same way. Set `VITE_API_BASE_URL` (see
 `web/.env.example`) to point a production build at a deployed API instead of
 the dev proxy.
 
@@ -444,6 +468,18 @@ hours" and similar windows count back from here, never from the wall clock.
 **Match factor**: (trucks × average load time) / (loaders × average truck
 cycle time). Below 1, loaders wait for trucks. Above 1, trucks queue for
 loaders.
+
+**Percent of plan**: Actual tonnes ÷ planned tonnes, for one shift, one
+truck-shift, or a whole window. Null wherever there's no plan to divide by.
+
+**Baseline**: The tonnes-weighted percent of plan across complete shifts in
+the window. It equals plan vs actual's overall `percentOfPlan` and sits
+around 85%, because schedules are built from book rates that real cycles
+rarely match.
+
+**Below typical**: A shift or truck-shift whose percent of plan falls more
+than a margin under the window's baseline (5 points for a shift, 10 points
+for a truck-shift). Only ever true on a complete shift.
 
 ## Scheduler
 
