@@ -402,14 +402,23 @@ the dev proxy.
   Book times assume full payload, no slow ramp and no noise. They come from
   `Scheduler.BookCyclePhases`, which also builds `Schedules`.
 - **Cycles**: one row per completed load -> haul -> dump -> return loop, with
-  the truck's route and loader for that cycle.
+  the truck's route and loader for that cycle. `QueueMin` is no longer an
+  independent random draw - it's how long the truck actually waited for its
+  loader to free up (plus a small positioning constant), because loaders now
+  serve one truck at a time, FIFO by arrival.
 - **Delays**: one row per period a truck is out of production, planned or
   unplanned, with a reason.
+- **LoaderDelays**: one row per period a loader itself is degraded or
+  stopped - a shift-change handover (`RateFactor` 0.00, fully stopped) or a
+  loader spike (`RateFactor` 0.50, half speed). These feed the queue model
+  directly: a truck arriving during one waits (or, for a spike, loads more
+  slowly) exactly as it physically would.
 - **Schedules**: one row per truck per shift, built by the scheduler before
   the shift starts: an assigned route/loader with planned cycles and tonnes,
   or a reason the truck is unavailable.
-- **vw_CycleDetail** / **vw_ScheduleDetail**: pre-joined views with names
-  instead of ids, for downstream consumers to query directly.
+- **vw_CycleDetail** / **vw_ScheduleDetail** / **vw_LoaderDelayDetail**:
+  pre-joined views with names instead of ids, for downstream consumers to
+  query directly.
 
 ## Glossary
 
@@ -538,16 +547,74 @@ numbers.
 2. **Every route into the waste dump runs slow.** Haul times on those three
    routes are about 15% longer than the speed model predicts (a ramp, not a
    per-route database flag).
-3. **Shift-change queueing.** Queue times rise fleet-wide for cycles that
-   start in the 06:00 or 18:00 hour.
-4. **Loader queue spikes.** Roughly once per loader per day, queueing at
-   that loader runs high (mean around 5 minutes) for 30–90 minutes.
+3. **Shift-change queueing.** Every loader stops for about 15 minutes at
+   06:00 and 18:00 (a `LoaderDelays` row), so queue times genuinely rise
+   fleet-wide for cycles starting in that hour - trucks are queueing behind a
+   loader that's actually stopped, not drawing a higher random number.
+4. **Loader queue spikes.** Roughly once per loader per day, that loader
+   runs at half speed for 30–90 minutes (a `LoaderDelays` row), which shows
+   up as elevated queueing at that loader for the window.
 5. **Silly schedules, by design.** The scheduler assigns routes randomly
    (see above), so which trucks are on which loader/route each shift is
    itself a "planted problem" for a later optimiser, not noise to explain
    away.
+6. **Truck T03 breaks down more often.** About 3x the fleet's Breakdown
+   frequency (~60%/truck/day vs ~20%/truck/day), with the same repair-time
+   distribution as everyone else - only the frequency is different. Tyre and
+   Major breakdown are unaffected.
+
+Loader contention is now real: a loader serves one truck at a time, FIFO by
+arrival, so a truck's `QueueMin` is genuinely how long it waited (plus a
+small positioning constant), not an independent random draw. This is what
+makes problems #3 and #4 loader-side events rather than a per-cycle queue
+draw with a higher mean.
 
 ## Numbers
+
+### Current (2026-09-27, loader-contention rewrite)
+
+Measured from a `--seed 42 --days 30` run after loaders became a genuinely
+contended, FIFO resource (queue time is no longer an independent random
+draw). Every number below comes from this run; everything under "Historical"
+further down predates the rewrite and is kept for its fix-by-fix narrative,
+not as a current baseline:
+
+- Cycles: 15,171. Delays: 2,329. Loader delays: 262. Schedules: 744 (12
+  trucks x 62 shifts).
+- Average payload: 95.4% of capacity fleet-wide; T07 alone averages 80.2%
+  (planted problem #1, unchanged by this rewrite).
+- Waste dump haul time (haul phase only, isolating the ramp from
+  contention): 11.7% over book, versus -2.5% on Ore routes (planted problem
+  #2, unchanged).
+- Average queue: 4.05 min outside the 06:00/18:00 hour, 7.06 min inside it
+  (planted problem #3, now a loader-side handover rather than a random
+  draw). Average queue inside a loader-spike window: 8.50 min, versus 4.07
+  min outside one (planted problem #4).
+- Average queue rises with contention: by trucks scheduled on the same
+  loader that shift, avg queue is 0.54 min (1 truck), 1.24 (2), 2.33 (3),
+  3.42 (4), 4.81 (5), 6.45 (6), 8.08 (7), 11.61 min (8) - a direct,
+  monotonic view of the FIFO model at work.
+- T03 (planted problem #6) logged 17 Breakdown delays over the window versus
+  a fleet average (excluding T03) of 5.2; the next highest truck logged 9.
+  (At the first-tried 2x rate, T03 logged 10 against T01's 9, lost in the
+  noise of a 30-day sample.)
+- Loader load intervals never overlap at the same loader (checked to ~1s,
+  the `DATETIME2(0)` rounding tolerance); the busiest loader-shift reached
+  552.5 of 720 minutes of load time (76.7% busy) - under the old
+  independent-draw model this figure could exceed 720 minutes (102-122%
+  busy), which was physically impossible for a resource that serves one
+  truck at a time. Loader busy % per shift: 43.7% average, 76.7% max (was
+  45-50% average, 102-122% max).
+- Tonnes per shift by destination: Crusher avg 19,414 t (min 2,969, max
+  41,563), ROM pad avg 18,690 t (min 3,618, max 40,005), Waste dump avg
+  13,566 t (min 2,902, max 26,665) - roughly 9-11% below the historical
+  baseline below, tracking the ~11% drop in cycle count from trucks now
+  genuinely queueing for a busy loader instead of hauling immediately.
+- No overlapping cycles or delays for any truck (checked to ~1s tolerance).
+- `dotnet test`: 96/96 pass, unchanged by this rewrite (the Kpi calculators
+  under test don't touch generator internals).
+
+### Historical (2026-09-23, pre-loader-contention)
 
 Measured from a `--seed 42 --days 30` run against the fixed generator and API
 (2026-09-23), after the five API-slice fixes below (truck-hour calendar
@@ -785,6 +852,12 @@ export HAUL_DB_CONN="Server=tcp:$SQL.database.windows.net,1433;Database=$DB;Auth
 dotnet run --project data-generator -- --reset-schema
 dotnet run --project data-generator
 ```
+
+The loader-contention rewrite (see "Numbers" above) added a table
+(`LoaderDelays`) and changed the schema and row counts, so the Azure snapshot
+needs a `--reset-schema` and a fresh `dotnet run --project data-generator`
+against it once this change is ready to deploy - the steps above already
+cover this, they just haven't been re-run against the deployed database yet.
 
 ### 5. App Service
 

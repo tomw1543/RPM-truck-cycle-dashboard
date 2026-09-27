@@ -7,11 +7,13 @@
 
    Safe to re-run: it drops and recreates everything (a full reset). */
 
+DROP VIEW  IF EXISTS dbo.vw_LoaderDelayDetail;
 DROP VIEW  IF EXISTS dbo.vw_ScheduleDetail;
 DROP VIEW  IF EXISTS dbo.vw_CycleDetail;
 DROP TABLE IF EXISTS dbo.Schedules;
 DROP TABLE IF EXISTS dbo.Delays;
 DROP TABLE IF EXISTS dbo.Cycles;
+DROP TABLE IF EXISTS dbo.LoaderDelays;
 DROP TABLE IF EXISTS dbo.Routes;
 DROP TABLE IF EXISTS dbo.Destinations;
 DROP TABLE IF EXISTS dbo.Loaders;
@@ -84,6 +86,22 @@ CREATE TABLE dbo.Delays (
 );
 
 CREATE INDEX IX_Delays_Truck_Time ON dbo.Delays (TruckId, StartTime);
+
+/* One row per period a loader is degraded or stopped: a shift-change handover (fully
+   stopped, RateFactor 0.00) or a loader spike (half speed, RateFactor 0.50). Both feed the
+   queue-contention model directly - a truck's QueueMin on dbo.Cycles reflects genuinely
+   waiting behind these, not an independent random draw. */
+CREATE TABLE dbo.LoaderDelays (
+    LoaderDelayId  BIGINT        IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    LoaderId       INT           NOT NULL REFERENCES dbo.Loaders(LoaderId),
+    StartTime      DATETIME2(0)  NOT NULL,
+    EndTime        DATETIME2(0)  NOT NULL,
+    Reason         NVARCHAR(50)  NOT NULL,
+    IsPlanned      BIT           NOT NULL,
+    RateFactor     DECIMAL(3,2)  NOT NULL
+);
+
+CREATE INDEX IX_LoaderDelays_Loader_Time ON dbo.LoaderDelays (LoaderId, StartTime);
 
 /* One row per truck per shift: its route/loader assignment and planned cycles/tonnes,
    or a reason it's unavailable for the whole shift. Built by the scheduler before the
@@ -161,4 +179,25 @@ JOIN dbo.Trucks        AS t ON t.TruckId       = s.TruckId
 LEFT JOIN dbo.Routes       AS r ON r.RouteId       = s.RouteId
 LEFT JOIN dbo.Loaders      AS l ON l.LoaderId      = s.LoaderId
 LEFT JOIN dbo.Destinations AS d ON d.DestinationId = r.DestinationId;
+GO
+
+/* Pre-joined loader-delay view, with the same ShiftName/ShiftDate derivation as
+   vw_CycleDetail plus a duration in minutes. */
+CREATE VIEW dbo.vw_LoaderDelayDetail AS
+SELECT
+    ld.LoaderDelayId,
+    l.Name AS LoaderName,
+    ld.StartTime,
+    ld.EndTime,
+    CASE WHEN DATEPART(HOUR, ld.StartTime) BETWEEN 6 AND 17 THEN 'Day' ELSE 'Night' END AS ShiftName,
+    CASE WHEN DATEPART(HOUR, ld.StartTime) BETWEEN 0 AND 5
+         THEN CAST(DATEADD(DAY, -1, ld.StartTime) AS DATE)
+         ELSE CAST(ld.StartTime AS DATE)
+    END AS ShiftDate,
+    DATEDIFF(SECOND, ld.StartTime, ld.EndTime) / 60.0 AS DurationMin,
+    ld.Reason,
+    ld.IsPlanned,
+    ld.RateFactor
+FROM dbo.LoaderDelays AS ld
+JOIN dbo.Loaders AS l ON l.LoaderId = ld.LoaderId;
 GO

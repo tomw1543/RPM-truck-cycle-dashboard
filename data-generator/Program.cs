@@ -30,6 +30,9 @@ var seed = GetIntArg("--seed", 42);
 var speed = GetDoubleArg("--speed", 1.0);
 var live = args.Contains("--live");
 var resetSchemaOnly = args.Contains("--reset-schema");
+// Throwaway diagnostic for SimulationEngine.ReplayShift, not part of the normal CLI surface -
+// off unless explicitly passed. Value is a shift start timestamp, e.g. 2026-09-26T18:00:00.
+var replaySelfCheckShift = GetStringArg("--replay-selfcheck", null);
 
 if (resetSchemaOnly)
 {
@@ -45,6 +48,12 @@ var fleet = Fleet.Create();
 // Live mode uses a fresh random stream so it doesn't replay the same values.
 var rng = live ? new Random() : new Random(seed);
 var sim = new Simulator(fleet, rng);
+
+if (replaySelfCheckShift != null)
+{
+    await RunReplaySelfCheckAsync(replaySelfCheckShift);
+    return 0;
+}
 
 if (live)
     await RunLiveAsync();
@@ -73,16 +82,16 @@ async Task RunHistoryAsync()
         await ResetSchemaAsync(conn);
     }
 
-    // Loader queue spikes are planned once, fleet-wide, before any truck is simulated,
-    // so the rng consumption order stays fixed for a given seed.
-    var spikes = new LoaderSpikeSchedule(fleet.Loaders, rng, from);
-    spikes.EnsurePlanned(to);
+    // Loader-side events (shift-change handover, loader spikes) are planned once, fleet-wide,
+    // before any truck is simulated, so the rng consumption order stays fixed for a given seed.
+    var loaderPlanner = new LoaderPlanner(fleet.Loaders, rng, from);
+    loaderPlanner.EnsurePlanned(to);
 
     // Every truck's full delay timeline is planned up front (deterministic given the
     // window), so the scheduler can see it before any cycle is simulated.
     var truckDelayLists = new Dictionary<int, List<PendingDelay>>();
     foreach (var truck in fleet.Trucks)
-        truckDelayLists[truck.Id] = DelayPlanner.Plan(rng, from, to);
+        truckDelayLists[truck.Id] = DelayPlanner.Plan(rng, from, to, truck.BreakdownProne);
 
     // Build every shift's schedule (all trucks) in chronological order before running
     // any truck's timeline, since cycles must follow the shift's assigned route.
@@ -107,28 +116,31 @@ async Task RunHistoryAsync()
     ScheduleRow? Lookup(int truckId, DateOnly shiftDate, string shiftName) =>
         scheduleLookup.TryGetValue((truckId, shiftDate, shiftName), out var row) ? row : null;
 
-    var cycles = new List<CycleRow>();
-    var delays = new List<DelayRow>();
-
-    foreach (var truck in fleet.Trucks)
-    {
-        var cursor0 = from.AddMinutes(rng.Next(0, 15)); // stagger truck start times
-        var timeline = new TruckTimeline(truck, cursor0, rng, sim, spikes, fleet, Lookup, truckDelayLists[truck.Id]);
-
-        while (timeline.Cursor < to)
+    // One timeline per truck, all sharing loaderPlanner. SimulationEngine.RunToHorizon
+    // advances whichever truck's cursor is earliest next (ties by truck id), so a loader's
+    // FIFO queue only ever reflects genuinely earlier arrivals across the whole fleet -
+    // this is the "event-driven joint simulation" the old per-truck, run-to-completion loop
+    // could not give: that loop finished one truck's entire window before starting the next,
+    // so two trucks on the same loader never actually contended for it.
+    var timelines = fleet.Trucks
+        .Select(truck =>
         {
-            var ev = timeline.Next(to);
-            if (ev is CycleRow cr) cycles.Add(cr);
-            else if (ev is DelayRow dr) delays.Add(dr);
-        }
-    }
+            var cursor0 = from.AddMinutes(rng.Next(0, 15)); // stagger truck start times
+            return new TruckTimeline(truck, cursor0, rng, sim, loaderPlanner, fleet, Lookup, truckDelayLists[truck.Id]);
+        })
+        .ToList();
+
+    var events = SimulationEngine.RunToHorizon(timelines, to);
+    var cycles = events.OfType<CycleRow>().ToList();
+    var delays = events.OfType<DelayRow>().ToList();
 
     await ResetAndSeedReferenceDataAsync(conn);
     await BulkInsertCyclesAsync(conn, cycles);
     await BulkInsertDelaysAsync(conn, delays);
     await BulkInsertSchedulesAsync(conn, scheduleRows);
+    await BulkInsertLoaderDelaysAsync(conn, loaderPlanner.AllDelays.ToList());
 
-    Console.WriteLine($"Done. Inserted {cycles.Count:N0} cycles, {delays.Count:N0} delays, {scheduleRows.Count:N0} schedules. Crusher guard fired {Scheduler.GuardFireCount} time(s).");
+    Console.WriteLine($"Done. Inserted {cycles.Count:N0} cycles, {delays.Count:N0} delays, {loaderPlanner.AllDelays.Count:N0} loader delays, {scheduleRows.Count:N0} schedules. Crusher guard fired {Scheduler.GuardFireCount} time(s).");
 }
 
 async Task RunLiveAsync()
@@ -159,7 +171,7 @@ async Task RunLiveAsync()
     // Starting at the max meant most trucks' next event was already "due" the instant
     // the clock started, firing a burst of catch-up inserts instead of pacing normally.
     var simClockStart = initialCursor.Values.DefaultIfEmpty(now).Min();
-    var spikes = new LoaderSpikeSchedule(fleet.Loaders, rng, simClockStart);
+    var loaderPlanner = new LoaderPlanner(fleet.Loaders, rng, simClockStart);
 
     // Shared, mutable schedule store for live mode: schedules are created just-in-time,
     // per truck, the first time a truck's timeline needs one (see TruckTimeline.Next).
@@ -192,7 +204,12 @@ async Task RunLiveAsync()
         return row;
     }
 
-    async Task DrainNewSchedulesAsync()
+    // Loader delays are planned ahead of time too (like schedules, they're knowable in
+    // advance), so queue them for insertion the same way, on the same shared connection.
+    var newlyCreatedLoaderDelays = new List<LoaderDelayRow>();
+    loaderPlanner.DelayPlanned += newlyCreatedLoaderDelays.Add;
+
+    async Task DrainNewSchedulesAndLoaderDelaysAsync()
     {
         foreach (var row in newlyCreatedSchedules)
         {
@@ -201,11 +218,19 @@ async Task RunLiveAsync()
                 (row.UnavailableReason is { } reason ? $"unavailable ({reason})" : $"route {row.RouteId} ({row.PlannedCycles:0.0} planned cycles)"));
         }
         newlyCreatedSchedules.Clear();
+
+        foreach (var row in newlyCreatedLoaderDelays)
+        {
+            await InsertOneLoaderDelayAsync(conn, row);
+            Console.WriteLine($"  loader delay: loader {row.LoaderId} {row.Reason} {row.StartTime:yyyy-MM-dd HH:mm} -> {row.EndTime:HH:mm} (rate {row.RateFactor:0.00})");
+        }
+        newlyCreatedLoaderDelays.Clear();
     }
 
     var timelines = fleet.Trucks.ToDictionary(
         t => t.Id,
-        t => new TruckTimeline(t, initialCursor[t.Id], rng, sim, spikes, fleet, GetOrCreateSchedule));
+        t => new TruckTimeline(t, initialCursor[t.Id], rng, sim, loaderPlanner, fleet, GetOrCreateSchedule));
+    var timelineList = timelines.Values.ToList();
 
     var pending = new Dictionary<int, PendingEvent>();
     var wallStart = DateTime.UtcNow;
@@ -216,18 +241,27 @@ async Task RunLiveAsync()
     {
         while (!cts.IsCancellationRequested)
         {
-            foreach (var truck in fleet.Trucks)
+            // Trucks lacking a pending event are advanced one at a time, always picking the
+            // one whose own cursor is earliest (ties by truck id) among that batch - the
+            // same rule SimulationEngine.RunToHorizon uses for history mode - so a loader's
+            // FIFO queue reflects true arrival order for trucks that become free together.
+            // A truck that was stuck behind a long delay and only becomes eligible on a
+            // later tick is not retroactively reordered against trucks already given a
+            // pending event on an earlier tick; this is a documented simplification for live
+            // mode, in the same spirit as the schedule crusher guard not running there.
+            var needing = timelineList.Where(t => !pending.ContainsKey(t.Truck.Id)).ToList();
+            while (needing.Count > 0)
             {
-                if (!pending.ContainsKey(truck.Id))
-                {
-                    var ev = timelines[truck.Id].Next()!; // live mode never passes a horizon, so this never returns null
-                    pending[truck.Id] = new PendingEvent(ev, EndOf(ev));
-                }
+                var next = SimulationEngine.PickNext(needing, _ => true)!;
+                needing.Remove(next);
+                var ev = next.Next()!; // live mode never passes a horizon, so this never returns null
+                pending[next.Truck.Id] = new PendingEvent(ev, EndOf(ev));
             }
 
-            // Insert (awaited) any schedules the loop above just created, before any
-            // cycle/delay insert below - all writes on this connection stay serialized.
-            await DrainNewSchedulesAsync();
+            // Insert (awaited) any schedules/loader delays the loop above just created,
+            // before any cycle/delay insert below - all writes on this connection stay
+            // serialized.
+            await DrainNewSchedulesAndLoaderDelaysAsync();
 
             var simClock = simClockStart + TimeSpan.FromTicks((long)((DateTime.UtcNow - wallStart).Ticks * speed));
 
@@ -260,6 +294,73 @@ async Task RunLiveAsync()
     Console.WriteLine("Stopped.");
 }
 
+/// <summary>Throwaway diagnostic for SimulationEngine.ReplayShift - not part of the normal data
+/// load. Reads one already-generated shift's Schedules and overlapping Delays, replays it
+/// through ReplayShift, and prints totals against what history mode actually produced for that
+/// shift (a few SQL queries, reported alongside this in the implementation notes). Then replays
+/// the same starting loader state a second time with every available truck reassigned onto one
+/// loader's route, to show queue time rising under overload. No DB writes.</summary>
+async Task RunReplaySelfCheckAsync(string shiftStartArg)
+{
+    var shiftStart = DateTime.Parse(shiftStartArg, System.Globalization.CultureInfo.InvariantCulture);
+    var shiftEnd = shiftStart.AddHours(12);
+    var shiftName = shiftStart.Hour == 6 ? "Day" : "Night";
+    var shiftDate = DateOnly.FromDateTime(shiftStart.Date);
+
+    await using var conn = new SqlConnection(connString);
+    await conn.OpenAsync();
+
+    var routeByTruckId = new Dictionary<int, int?>();
+    await using (var cmd = new SqlCommand(
+        "SELECT TruckId, RouteId FROM dbo.Schedules WHERE ShiftDate = @d AND ShiftName = @n;", conn))
+    {
+        cmd.Parameters.AddWithValue("@d", shiftDate.ToDateTime(TimeOnly.MinValue));
+        cmd.Parameters.AddWithValue("@n", shiftName);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            routeByTruckId[reader.GetInt32(0)] = reader.IsDBNull(1) ? null : reader.GetInt32(1);
+    }
+
+    var knownDelaysByTruckId = new Dictionary<int, List<PendingDelay>>();
+    await using (var cmd = new SqlCommand(
+        "SELECT TruckId, StartTime, EndTime, Reason, IsPlanned FROM dbo.Delays WHERE StartTime < @e AND EndTime > @s;", conn))
+    {
+        cmd.Parameters.AddWithValue("@s", shiftStart);
+        cmd.Parameters.AddWithValue("@e", shiftEnd);
+        await using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var truckId = reader.GetInt32(0);
+            var start = reader.GetDateTime(1);
+            var end = reader.GetDateTime(2);
+            var pd = new PendingDelay(start, (end - start).TotalMinutes, reader.GetString(3), reader.GetBoolean(4));
+            if (!knownDelaysByTruckId.TryGetValue(truckId, out var list))
+                knownDelaysByTruckId[truckId] = list = new List<PendingDelay>();
+            list.Add(pd);
+        }
+    }
+
+    Console.WriteLine($"Replay self-check: shift {shiftDate} {shiftName} ({shiftStart:u} - {shiftEnd:u}), {routeByTruckId.Count} trucks in Schedules.");
+
+    // Run 1: the shift's actual route assignment, starting from a fresh loader state.
+    var loaderPlannerBase = new LoaderPlanner(fleet.Loaders, new Random(1001), shiftStart);
+    loaderPlannerBase.EnsurePlanned(shiftEnd);
+    var loaderPlanner1 = loaderPlannerBase;
+    var loaderPlanner2 = loaderPlannerBase.Clone(new Random(2002)); // independent copy for run 2, taken before run 1 mutates loaderPlannerBase
+
+    var events1 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlanner1, new Random(3003));
+    var cycles1 = events1.OfType<CycleRow>().ToList();
+    Console.WriteLine($"Run 1 (actual assignment): {cycles1.Count} cycles, {cycles1.Sum(c => c.PayloadTonnes):N1} t, avg queue {cycles1.Average(c => c.QueueMin):N2} min.");
+
+    // Run 2: every available truck reassigned onto a single loader's route (route 1, L1's
+    // home route), replayed from the SAME starting loader state via the clone above.
+    var singleRouteId = fleet.Routes.First(r => r.LoaderId == 1).Id;
+    var overloadedRouteByTruckId = routeByTruckId.ToDictionary(kv => kv.Key, kv => kv.Value == null ? (int?)null : singleRouteId);
+    var events2 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, overloadedRouteByTruckId, knownDelaysByTruckId, loaderPlanner2, new Random(4004));
+    var cycles2 = events2.OfType<CycleRow>().ToList();
+    Console.WriteLine($"Run 2 (all onto one loader): {cycles2.Count} cycles, {cycles2.Sum(c => c.PayloadTonnes):N1} t, avg queue {cycles2.Average(c => c.QueueMin):N2} min.");
+}
+
 // ---------------------------------------------------------------------------
 // Shift helpers
 // ---------------------------------------------------------------------------
@@ -280,9 +381,9 @@ DateTime FloorToShiftBoundary(DateTime t)
 async Task<bool> TablesExistAsync(SqlConnection conn)
 {
     await using var cmd = new SqlCommand(
-        "SELECT COUNT(*) FROM sys.tables WHERE name IN ('Trucks','Loaders','Destinations','Routes','Cycles','Delays','Schedules');", conn);
+        "SELECT COUNT(*) FROM sys.tables WHERE name IN ('Trucks','Loaders','Destinations','Routes','Cycles','Delays','Schedules','LoaderDelays');", conn);
     var count = (int)(await cmd.ExecuteScalarAsync())!;
-    return count == 7;
+    return count == 8;
 }
 
 async Task ResetSchemaAsync(SqlConnection conn)
@@ -330,6 +431,7 @@ async Task ResetAndSeedReferenceDataAsync(SqlConnection conn)
 {
     // Cycles/Delays/Schedules are not referenced by any other table, so TRUNCATE works
     // (and resets identities). Reference tables must be cleared in FK-dependency order.
+    await ExecAsync(conn, "TRUNCATE TABLE dbo.LoaderDelays;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.Delays;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.Cycles;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.Schedules;");
@@ -455,6 +557,30 @@ async Task BulkInsertDelaysAsync(SqlConnection conn, List<DelayRow> rows)
     await bulk.WriteToServerAsync(table);
 }
 
+async Task BulkInsertLoaderDelaysAsync(SqlConnection conn, IReadOnlyList<LoaderDelayRow> rows)
+{
+    var table = new DataTable();
+    table.Columns.Add("LoaderId", typeof(int));
+    table.Columns.Add("StartTime", typeof(DateTime));
+    table.Columns.Add("EndTime", typeof(DateTime));
+    table.Columns.Add("Reason", typeof(string));
+    table.Columns.Add("IsPlanned", typeof(bool));
+    table.Columns.Add("RateFactor", typeof(decimal));
+
+    foreach (var r in rows)
+        table.Rows.Add(r.LoaderId, r.StartTime, r.EndTime, r.Reason, r.IsPlanned, (decimal)r.RateFactor);
+
+    using var bulk = new SqlBulkCopy(conn)
+    {
+        DestinationTableName = "dbo.LoaderDelays",
+        BatchSize = 5000
+    };
+    foreach (DataColumn c in table.Columns)
+        bulk.ColumnMappings.Add(c.ColumnName, c.ColumnName);
+
+    await bulk.WriteToServerAsync(table);
+}
+
 async Task BulkInsertSchedulesAsync(SqlConnection conn, List<ScheduleRow> rows)
 {
     var table = new DataTable();
@@ -520,6 +646,20 @@ async Task InsertOneDelayAsync(SqlConnection conn, DelayRow r)
     cmd.Parameters.AddWithValue("@end", r.EndTime);
     cmd.Parameters.AddWithValue("@reason", r.Reason);
     cmd.Parameters.AddWithValue("@planned", r.IsPlanned);
+    await cmd.ExecuteNonQueryAsync();
+}
+
+async Task InsertOneLoaderDelayAsync(SqlConnection conn, LoaderDelayRow r)
+{
+    await using var cmd = new SqlCommand(@"
+        INSERT INTO dbo.LoaderDelays (LoaderId, StartTime, EndTime, Reason, IsPlanned, RateFactor)
+        VALUES (@loader, @start, @end, @reason, @planned, @rate);", conn);
+    cmd.Parameters.AddWithValue("@loader", r.LoaderId);
+    cmd.Parameters.AddWithValue("@start", r.StartTime);
+    cmd.Parameters.AddWithValue("@end", r.EndTime);
+    cmd.Parameters.AddWithValue("@reason", r.Reason);
+    cmd.Parameters.AddWithValue("@planned", r.IsPlanned);
+    cmd.Parameters.AddWithValue("@rate", (decimal)r.RateFactor);
     await cmd.ExecuteNonQueryAsync();
 }
 
@@ -601,6 +741,12 @@ double GetDoubleArg(string name, double fallback)
     return i >= 0 && i + 1 < args.Length && double.TryParse(args[i + 1], out var v) ? v : fallback;
 }
 
+string? GetStringArg(string name, string? fallback)
+{
+    var i = Array.IndexOf(args, name);
+    return i >= 0 && i + 1 < args.Length ? args[i + 1] : fallback;
+}
+
 static DateTime EndOf(object ev) =>
     ev is CycleRow c ? c.StartTime.AddMinutes(Simulator.TotalMin(c)) : ((DelayRow)ev).EndTime;
 
@@ -622,7 +768,7 @@ static class MineTime
     }
 }
 
-record Truck(int Id, string Name, double CapacityTonnes, double EmptyMassTonnes, bool Underloaded);
+record Truck(int Id, string Name, double CapacityTonnes, double EmptyMassTonnes, bool Underloaded, bool BreakdownProne);
 record Loader(int Id, string Name);
 record Destination(int Id, string Name, string Material);
 record Route(int Id, string Name, int LoaderId, int DestinationId, double DistanceKm, double GradePercent);
@@ -666,11 +812,12 @@ class Fleet
     {
         var f = new Fleet();
 
-        // 12 trucks. T07 is the "planted" underloaded truck. The dashboard should discover this.
-        // (The flag lives only in this program - it is NOT stored in the database.)
+        // 12 trucks. T07 is the "planted" underloaded truck, T03 the "planted" breakdown-prone
+        // one (roughly 2x the fleet's Breakdown frequency, same repair-duration distribution).
+        // Both flags live only in this program - neither is stored in the database.
         // EmptyMassTonnes is uniform across the fleet (illustrative, not modelled per-truck).
         for (var i = 1; i <= 12; i++)
-            f.Trucks.Add(new Truck(i, $"T{i:00}", 220, EmptyMassTonnes: 165, Underloaded: i == 7));
+            f.Trucks.Add(new Truck(i, $"T{i:00}", 220, EmptyMassTonnes: 165, Underloaded: i == 7, BreakdownProne: i == 3));
 
         for (var i = 1; i <= 3; i++)
             f.Loaders.Add(new Loader(i, $"L{i}"));
@@ -707,49 +854,10 @@ static class SpeedModel
     public static double EmptySpeedKmh(double gradePercent) => 42 - 0.8 * gradePercent;
 }
 
-/// <summary>Plans loader queue spikes (planted problem #4): roughly one 30-90 minute
-/// spike per loader per day, during which queue mean at that loader rises to ~5 min.</summary>
-class LoaderSpikeSchedule
-{
-    private readonly List<Loader> _loaders;
-    private readonly Random _rng;
-    private readonly List<(int LoaderId, DateTime Start, DateTime End)> _spikes = new();
-    private DateTime _plannedUntil;
-
-    public LoaderSpikeSchedule(List<Loader> loaders, Random rng, DateTime start)
-    {
-        _loaders = loaders;
-        _rng = rng;
-        _plannedUntil = start.Date;
-    }
-
-    public void EnsurePlanned(DateTime upTo)
-    {
-        if (_plannedUntil >= upTo) return;
-
-        for (var day = _plannedUntil.Date; day < upTo; day = day.AddDays(1))
-        {
-            foreach (var loader in _loaders)
-            {
-                if (_rng.NextDouble() < 0.9) // "roughly" 1 per loader per day
-                {
-                    var start = day.AddMinutes(_rng.NextDouble() * 24 * 60);
-                    var duration = 30 + _rng.NextDouble() * 60; // 30-90 minutes
-                    _spikes.Add((loader.Id, start, start.AddMinutes(duration)));
-                }
-            }
-        }
-        _plannedUntil = upTo;
-    }
-
-    public bool IsInSpike(int loaderId, DateTime t) =>
-        _spikes.Any(s => s.LoaderId == loaderId && t >= s.Start && t < s.End);
-}
-
 /// <summary>Plans planned and unplanned delays for one truck over a time window.</summary>
 static class DelayPlanner
 {
-    public static List<PendingDelay> Plan(Random rng, DateTime from, DateTime to)
+    public static List<PendingDelay> Plan(Random rng, DateTime from, DateTime to, bool breakdownProne)
     {
         var list = new List<PendingDelay>();
 
@@ -779,11 +887,14 @@ static class DelayPlanner
             }
         }
 
-        // Unplanned: breakdown (~20%/truck/day, 1-3 h), tyre (~3%/truck/day, ~1 h),
-        // and major breakdown (~2%/truck/day, 1-3 days - long enough to span shifts).
+        // Unplanned: breakdown (~20%/truck/day, 1-3 h; ~60%/truck/day for the planted
+        // breakdown-prone truck - same repair-duration distribution, just more frequent),
+        // tyre (~3%/truck/day, ~1 h), and major breakdown (~2%/truck/day, 1-3 days - long
+        // enough to span shifts). Tyre and major breakdown are unchanged for every truck.
+        var breakdownChance = breakdownProne ? 0.60 : 0.20;
         for (var day = from.Date; day < to; day = day.AddDays(1))
         {
-            if (rng.NextDouble() < 0.20)
+            if (rng.NextDouble() < breakdownChance)
             {
                 var at = day.AddMinutes(rng.NextDouble() * 24 * 60);
                 if (at >= from && at < to)
@@ -970,7 +1081,7 @@ class TruckTimeline
 
     private readonly Random _rng;
     private readonly Simulator _sim;
-    private readonly LoaderSpikeSchedule _spikes;
+    private readonly LoaderPlanner _loaderPlanner;
     private readonly Fleet _fleet;
     private readonly List<PendingDelay> _pending = new();
     private readonly bool _fullyPlanned;
@@ -991,14 +1102,14 @@ class TruckTimeline
     // Live: schedules are created just-in-time from this truck's known-delay snapshot.
     private readonly Func<int, DateOnly, string, DateTime, DateTime, List<PendingDelay>, DelayRow?, ScheduleRow>? _scheduleFactory;
 
-    public TruckTimeline(Truck truck, DateTime start, Random rng, Simulator sim, LoaderSpikeSchedule spikes, Fleet fleet,
+    public TruckTimeline(Truck truck, DateTime start, Random rng, Simulator sim, LoaderPlanner loaderPlanner, Fleet fleet,
         Func<int, DateOnly, string, ScheduleRow?> scheduleLookup, List<PendingDelay> preplannedDelays)
     {
         Truck = truck;
         Cursor = start;
         _rng = rng;
         _sim = sim;
-        _spikes = spikes;
+        _loaderPlanner = loaderPlanner;
         _fleet = fleet;
         _plannedUntil = start;
         _scheduleLookup = scheduleLookup;
@@ -1008,14 +1119,14 @@ class TruckTimeline
         _fullyPlanned = true;
     }
 
-    public TruckTimeline(Truck truck, DateTime start, Random rng, Simulator sim, LoaderSpikeSchedule spikes, Fleet fleet,
+    public TruckTimeline(Truck truck, DateTime start, Random rng, Simulator sim, LoaderPlanner loaderPlanner, Fleet fleet,
         Func<int, DateOnly, string, DateTime, DateTime, List<PendingDelay>, DelayRow?, ScheduleRow> scheduleFactory)
     {
         Truck = truck;
         Cursor = start;
         _rng = rng;
         _sim = sim;
-        _spikes = spikes;
+        _loaderPlanner = loaderPlanner;
         _fleet = fleet;
         _plannedUntil = start;
         _scheduleFactory = scheduleFactory;
@@ -1025,7 +1136,7 @@ class TruckTimeline
     {
         if (_fullyPlanned) return;
         if (_plannedUntil >= upTo) return;
-        _pending.AddRange(DelayPlanner.Plan(_rng, _plannedUntil, upTo));
+        _pending.AddRange(DelayPlanner.Plan(_rng, _plannedUntil, upTo, Truck.BreakdownProne));
         _pending.Sort((a, b) => a.RequestedStart.CompareTo(b.RequestedStart));
         _plannedUntil = upTo;
     }
@@ -1041,7 +1152,7 @@ class TruckTimeline
             var lookAhead = Cursor.AddDays(2);
             var planTo = horizon.HasValue && horizon.Value < lookAhead ? horizon.Value : lookAhead;
             EnsurePlanned(planTo);
-            _spikes.EnsurePlanned(planTo);
+            _loaderPlanner.EnsurePlanned(planTo);
 
             if (_pending.Count > 0 && _pending[0].RequestedStart <= Cursor)
             {
@@ -1092,7 +1203,7 @@ class TruckTimeline
             }
 
             var route = _fleet.RouteById(schedule.RouteId.Value);
-            var row2 = _sim.BuildCycle(Truck, Cursor, route, _spikes);
+            var row2 = _sim.BuildCycle(Truck, Cursor, route, _loaderPlanner);
             Cursor = Cursor.AddMinutes(Simulator.TotalMin(row2));
             return row2;
         }
@@ -1125,7 +1236,12 @@ class Simulator
     public static double TotalMin(CycleRow r) =>
         r.LoadMin + r.HaulMin + r.DumpMin + r.ReturnMin + r.QueueMin;
 
-    public CycleRow BuildCycle(Truck truck, DateTime start, Route route, LoaderSpikeSchedule spikes)
+    /// <summary>Builds one cycle for a truck arriving at its route's loader at `start`. Queue
+    /// time is no longer drawn independently - it falls out of genuine loader contention
+    /// (see LoaderPlanner): a loader serves one truck at a time, FIFO by arrival, and stops
+    /// or slows for the loader-side events LoaderPlanner has already planned (planted problems
+    /// #3 and #4 now live there, not here).</summary>
+    public CycleRow BuildCycle(Truck truck, DateTime start, Route route, LoaderPlanner loaderPlanner)
     {
         var loader = _fleet.LoaderById(route.LoaderId);
 
@@ -1136,7 +1252,7 @@ class Simulator
 
         // Load time scales with payload share: a ~97% load averages ~3.8 min, ~80% ~3.1 min.
         var baseLoad = Math.Max(2.0, Normal(3.8, 0.6));
-        var loadMin = baseLoad * (payload / (0.97 * truck.CapacityTonnes));
+        var loadMinNominal = baseLoad * (payload / (0.97 * truck.CapacityTonnes));
 
         var dumpMin = Math.Max(0.6, Normal(1.2, 0.3));
 
@@ -1154,7 +1270,22 @@ class Simulator
         var haulMin = route.DistanceKm / loadedSpeedKmh * 60 * slowFactor * grossWeightRatio * Math.Max(0.8, Normal(1, 0.06));
         var returnMin = route.DistanceKm / emptySpeedKmh * 60 * Math.Max(0.8, Normal(1, 0.06));
 
-        var queueMin = QueueMinutes(start, loader.Id, spikes);
+        // Loader contention: the truck joins this loader's FIFO queue. loadStartRaw is the
+        // instant the loader is actually free to serve it - the later of "when the truck
+        // arrived" and "when the loader last finished" - pushed past any full-stop (shift
+        // handover) window it falls in. A small positioning/manoeuvring constant is then
+        // added to get the real load-start instant, which is also what QueueMin is measured
+        // against, so StartTime + QueueMin always lands exactly on it (no drift versus the
+        // loader's FreeAt bookkeeping, which is what the overlap checks rely on).
+        var loadStartRaw = start > loaderPlanner.FreeAt(loader.Id) ? start : loaderPlanner.FreeAt(loader.Id);
+        loadStartRaw = loaderPlanner.SkipPastFullStops(loader.Id, loadStartRaw);
+        var positioning = 0.3 + _rng.NextDouble() * 0.4; // ~0.5 min average positioning at the loader
+        var loadStart = loadStartRaw.AddMinutes(positioning);
+        var rate = loaderPlanner.RateFactorAt(loader.Id, loadStart); // 1.0 normally, 0.50 in a spike
+        var loadMin = loadMinNominal / rate;
+        loaderPlanner.SetFreeAt(loader.Id, loadStart.AddMinutes(loadMin));
+
+        var queueMin = (loadStart - start).TotalMinutes;
 
         // Illustrative fuel burn in litres per minute: driving loaded > driving empty > idling/queueing.
         // Haul fuel scales with the same gross weight ratio as haul time.
@@ -1164,17 +1295,6 @@ class Simulator
             truck.Id, loader.Id, route.Id, start,
             R(loadMin), R(haulMin), R(dumpMin), R(returnMin), R(queueMin),
             Math.Round(payload, 1), Math.Round(fuel, 1));
-    }
-
-    // Planted problem #3: fleet-wide queue rise at shift change (06:00 and 18:00 hour).
-    // Planted problem #4: a loader-specific queue spike (see LoaderSpikeSchedule).
-    private double QueueMinutes(DateTime start, int loaderId, LoaderSpikeSchedule spikes)
-    {
-        var atShiftChange = start.Hour == 6 || start.Hour == 18;
-        var inSpike = spikes.IsInSpike(loaderId, start);
-        var mean = (atShiftChange || inSpike) ? 5.0 : 0.8;
-        var q = -mean * Math.Log(1.0 - _rng.NextDouble()); // exponential: usually small, sometimes long
-        return Math.Min(q, 25);
     }
 
     // Bell-curve random number (Box-Muller transform).
