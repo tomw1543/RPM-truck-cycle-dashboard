@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build solution
+        run: dotnet build HaulCycle.sln --configuration Release
+
+      - name: Run tests
+        run: dotnet test HaulCycle.sln --configuration Release --no-build
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Lint web
+        working-directory: web
+        run: npm run lint
+
+      - name: Build web
+        working-directory: web
+        run: npm run build
+
+  deploy-api:
+    needs: build-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.AZURE_CLIENT_ID != ''
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for API changes
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            api:
+              - 'api/**'
+
+      - name: Set up .NET
+        if: steps.filter.outputs.api == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Publish API
+        if: steps.filter.outputs.api == 'true'
+        run: dotnet publish api/HaulCycle.Api -c Release -o publish
+
+      - name: Azure login
+        if: steps.filter.outputs.api == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure App Service
+        if: steps.filter.outputs.api == 'true'
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: haulcycle-api
+          package: publish
+
+      - name: Wait for the app to come up
+        if: steps.filter.outputs.api == 'true'
+        run: |
+          url="https://haulcycle-api.azurewebsites.net/health"
+          # F1 has a slow cold start after a deploy - retry with backoff rather than
+          # failing on the first attempt.
+          for attempt in $(seq 1 20); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' "$url" || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Health check passed on attempt $attempt."
+              exit 0
+            fi
+            echo "Attempt $attempt: got status $status, retrying..."
+            sleep 15
+          done
+          echo "Health check never returned 200."
+          exit 1

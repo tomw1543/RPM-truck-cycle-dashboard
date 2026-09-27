@@ -48,19 +48,20 @@ GO
 -- no INSERT/UPDATE/DELETE/EXECUTE/ALTER rights anywhere.
 
 /* ---------------------------------------------------------------------------------
-   Azure SQL variant (commented out).
+   Azure SQL variant (commented out) - managed identity, no password.
 
-   Azure SQL has no server-level logins in the same sense as a self-hosted instance -
-   auth is per-database via contained database users. Run this instead, connected
-   directly to the target database (not master):
+   The target Azure SQL database is Entra-only, so there is no SQL login/password
+   pair at all here. Instead the web app's system-assigned managed identity becomes
+   a database user, authenticated as an Entra principal rather than by password.
+   The user name below must be the web app's name exactly (its identity's display
+   name in Entra is the resource name, "haulcycle-api") - not a name you choose.
 
-   IF EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'haul_api')
-       DROP USER haul_api;
+   Run this once, connected directly to the target database (not master), signed in
+   as the Entra admin:
+
+   CREATE USER [haulcycle-api] FROM EXTERNAL PROVIDER;
    GO
 
-   CREATE USER haul_api WITH PASSWORD = '$(HaulApiPassword)';
-   GO
-
-   ALTER ROLE db_datareader ADD MEMBER haul_api;
+   ALTER ROLE db_datareader ADD MEMBER [haulcycle-api];
    GO
    --------------------------------------------------------------------------------- */

@@ -6,11 +6,20 @@ import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, Meta,
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
 const LIVE_REFETCH_MS = 30_000
 
+/** A paused Azure SQL database can take about a minute to resume, and requests fail while
+ * it does. Meta is the first request of a session, so it keeps retrying for ~2 minutes
+ * behind the full-page loading screen. 4xx responses won't fix themselves, so they don't retry. */
+const META_MAX_RETRIES = 12
+const META_RETRY_DELAY_MS = 10_000
+
 export function useMeta(live: boolean) {
   return useQuery({
     queryKey: ['meta'],
     queryFn: () => apiGet<Envelope<Meta>>('/api/meta'),
     refetchInterval: live ? LIVE_REFETCH_MS : false,
+    retry: (failureCount, error) =>
+      !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failureCount < META_MAX_RETRIES,
+    retryDelay: META_RETRY_DELAY_MS,
   })
 }
 

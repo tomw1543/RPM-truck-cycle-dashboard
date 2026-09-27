@@ -2,7 +2,7 @@ using HaulCycle.Api.Data;
 using HaulCycle.Api.Endpoints;
 using Scalar.AspNetCore;
 
-const string DevCorsPolicy = "DevClient";
+const string CorsPolicy = "Client";
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -32,27 +32,39 @@ builder.Services.AddOutputCache(options =>
 
 builder.Services.AddProblemDetails();
 
-if (builder.Environment.IsDevelopment())
+// Allowed browser origins for the deployed frontend, read from HAUL_API_CORS_ORIGINS
+// (comma-separated, trimmed, empties and trailing slashes dropped). In Development this
+// merges with the fixed Vite dev server origin below; outside Development, an unset or
+// empty env var means no allowed origins - CORS stays closed rather than crashing.
+var corsOriginsFromEnv = (Environment.GetEnvironmentVariable("HAUL_API_CORS_ORIGINS") ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+    .Select(origin => origin.Trim().TrimEnd('/'))
+    .Where(origin => origin.Length > 0)
+    .ToArray();
+
+var allowedOrigins = builder.Environment.IsDevelopment()
+    ? corsOriginsFromEnv.Append("http://localhost:5173").Distinct().ToArray()
+    : corsOriginsFromEnv;
+
+builder.Services.AddCors(options =>
 {
-    builder.Services.AddCors(options =>
+    options.AddPolicy(CorsPolicy, policy =>
     {
-        options.AddPolicy(DevCorsPolicy, policy =>
-        {
-            policy.WithOrigins("http://localhost:5173")
-                .AllowAnyMethod()
-                .AllowAnyHeader();
-        });
+        policy.WithOrigins(allowedOrigins)
+            .WithMethods("GET")
+            .AllowAnyHeader();
     });
-}
+});
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-    app.MapScalarApiReference();
-    app.UseCors(DevCorsPolicy);
-}
+// Scalar/OpenAPI are available in every environment - the deployed API has no other
+// interactive docs UI, and there is nothing in the API surface sensitive enough to hide
+// in Production (it is read-only and fronted by a public dashboard anyway).
+app.MapOpenApi();
+app.MapScalarApiReference();
+
+app.UseCors(CorsPolicy);
 
 app.UseOutputCache();
 

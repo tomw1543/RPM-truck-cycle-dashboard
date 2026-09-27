@@ -12,6 +12,8 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? 'bg-slate-800 text-cyan-300' : 'text-slate-400 hover:text-slate-200'
   }`
 
+const hideLiveToggle = import.meta.env.VITE_HIDE_LIVE_TOGGLE === 'true'
+
 export function Header({ asOf, live, onLiveChange }: HeaderProps) {
   return (
     <header className="border-b border-slate-800 bg-slate-950">
@@ -36,22 +38,24 @@ export function Header({ asOf, live, onLiveChange }: HeaderProps) {
           </NavLink>
         </nav>
 
-        <label className="ml-auto flex items-center gap-2 text-sm text-slate-400">
-          <span>Live</span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={live}
-            onClick={() => onLiveChange(!live)}
-            className={`relative h-5 w-9 rounded-full transition-colors ${live ? 'bg-cyan-600' : 'bg-slate-700'}`}
-          >
-            <span
-              className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-slate-100 transition-transform ${
-                live ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </button>
-        </label>
+        {!hideLiveToggle && (
+          <label className="ml-auto flex items-center gap-2 text-sm text-slate-400">
+            <span>Live</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={live}
+              onClick={() => onLiveChange(!live)}
+              className={`relative h-5 w-9 rounded-full transition-colors ${live ? 'bg-cyan-600' : 'bg-slate-700'}`}
+            >
+              <span
+                className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-slate-100 transition-transform ${
+                  live ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+              />
+            </button>
+          </label>
+        )}
       </div>
     </header>
   )

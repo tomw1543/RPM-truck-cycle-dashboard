@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Route, Routes } from 'react-router'
 import { useMeta } from './api/hooks'
+import { FullPageLoading } from './components/FullPageLoading'
 import { Header } from './components/Header'
 import { Losses } from './pages/Losses'
 import { Overview } from './pages/Overview'
@@ -11,6 +12,13 @@ import { Trucks } from './pages/Trucks'
 function App() {
   const [live, setLive] = useState(false)
   const meta = useMeta(live)
+
+  // The database auto-pauses when idle, so the very first request of a session can take
+  // close to a minute to come back. Show a full-page loading state for that one wait
+  // rather than the small per-section banners the rest of the app uses.
+  if (meta.isLoading) {
+    return <FullPageLoading />
+  }
 
   return (
     <div className="min-h-screen bg-slate-950">

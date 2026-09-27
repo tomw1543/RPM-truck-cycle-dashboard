@@ -140,9 +140,9 @@ MSYS_NO_PATHCONV=1 docker compose exec db /opt/mssql-tools18/bin/sqlcmd -C \
 ```
 
 Safe to re-run — it drops and recreates the login/user first. `db/readonly-login.sql`
-also has the Azure SQL variant (contained database user via `CREATE USER ...
-WITH PASSWORD`, since Azure SQL has no server-level logins in the self-hosted
-sense) as a commented block in the same file.
+also has a commented Azure SQL block for the deployed database, which creates a
+user for the API's managed identity instead of a login with a password (see
+[Deploying](#deploying)).
 
 Verify it can read but not write:
 
@@ -165,10 +165,11 @@ dotnet run --project api/HaulCycle.Api
 ```
 
 `HAUL_API_DB_CONN` is required, with no fallback — same fail-fast convention
-as the generator's `HAUL_DB_CONN`. In development, a browsable API reference
-is served by [Scalar](https://github.com/scalar/scalar) at `/scalar/v1`
-(OpenAPI document at `/openapi/v1.json`); CORS allows `http://localhost:5173`
-(the future `web/` dev server). The data endpoints are output-cached for 30
+as the generator's `HAUL_DB_CONN`. A browsable API reference is served by
+[Scalar](https://github.com/scalar/scalar) at `/scalar/v1` (OpenAPI document
+at `/openapi/v1.json`) in every environment. CORS allows GET from the origins
+in `HAUL_API_CORS_ORIGINS` (comma-separated), plus `http://localhost:5173` in
+Development; with the variable unset, production allows no origins. The data endpoints are output-cached for 30
 seconds, varied by query string.
 
 ### Endpoints
@@ -698,6 +699,168 @@ for the manual verification log). Findings:
   cycle's start) shows a maximum 1-second overlap fleet-wide, consistent
   with `StartTime DATETIME2(0)` rounding to whole seconds (see "Numbers"
   above) - not a real double-booking.
+
+## Deploying
+
+The hosted demo runs the React app on Vercel (Hobby), the API on Azure App
+Service F1 (Linux, no Always On) and the data on the Azure SQL free offer.
+The database holds a static 30-day, seed-42 snapshot loaded once from a
+developer machine, so its as-of time is the moment of the load. Live mode is
+not run in the cloud, because a process writing around the clock would keep
+the database awake and use up the free monthly allowance within days.
+
+The server uses Microsoft Entra-only authentication, so no SQL password
+exists. The API signs in with its App Service managed identity (read-only,
+`db_datareader`), and CI deploys through OIDC federated credentials, so the
+repository holds no secrets.
+
+Run these in Git Bash from the repo root, signed in with `az login`.
+
+### 0. Variables
+
+```bash
+RG=haulcycle-rg
+LOC=australiaeast
+SQL=haulcycle-sql-<suffix>      # must be globally unique
+DB=HaulCycleInsights
+PLAN=haulcycle-plan
+APP=haulcycle-api               # the CI workflow and Vercel both use this name
+REPO=<owner>/<repo>
+SUB_ID=$(az account show --query id -o tsv)
+TENANT_ID=$(az account show --query tenantId -o tsv)
+ME_ID=$(az ad signed-in-user show --query id -o tsv)
+ME_UPN=$(az ad signed-in-user show --query userPrincipalName -o tsv)
+```
+
+### 1. Register the SQL provider and set a budget
+
+```bash
+az provider register -n Microsoft.Sql --wait
+```
+
+In the portal, add a monthly budget under **Cost Management > Budgets** with
+email alerts at 50% and 100% of actual spend.
+
+### 2. SQL server and free-offer database
+
+```bash
+az group create -n $RG -l $LOC
+
+az sql server create -g $RG -n $SQL -l $LOC \
+  --enable-ad-only-auth \
+  --external-admin-principal-type User \
+  --external-admin-name "$ME_UPN" \
+  --external-admin-sid "$ME_ID"
+
+az sql db create -g $RG -s $SQL -n $DB \
+  --edition GeneralPurpose --compute-model Serverless --family Gen5 --capacity 2 \
+  --use-free-limit --free-limit-exhaustion-behavior AutoPause
+
+# Expect free: true, onLimit: AutoPause. If not, delete the database before it bills.
+az sql db show -g $RG -s $SQL -n $DB \
+  --query "{free:useFreeLimit, onLimit:freeLimitExhaustionBehavior}"
+```
+
+### 3. Firewall
+
+"Allow Azure services" lets the API in; Entra-only auth still requires a
+valid identity. Your own IP gets a temporary rule for the load and the query
+editor.
+
+```bash
+az sql server firewall-rule create -g $RG -s $SQL -n AllowAzureServices \
+  --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
+
+MY_IP=$(curl -s https://api.ipify.org)
+az sql server firewall-rule create -g $RG -s $SQL -n TempMyIp \
+  --start-ip-address $MY_IP --end-ip-address $MY_IP
+```
+
+### 4. Load the snapshot
+
+The generator signs in with your `az login` credentials. The first
+connection can take up to a minute while the database resumes.
+
+```bash
+export HAUL_DB_CONN="Server=tcp:$SQL.database.windows.net,1433;Database=$DB;Authentication=Active Directory Default;Encrypt=True;Connect Timeout=90"
+dotnet run --project data-generator -- --reset-schema
+dotnet run --project data-generator
+```
+
+### 5. App Service
+
+`ConnectRetryCount`/`ConnectRetryInterval` make SqlClient retry while a
+paused database resumes, instead of failing the first request.
+
+```bash
+az appservice plan create -g $RG -n $PLAN -l $LOC --is-linux --sku F1
+az webapp create -g $RG -p $PLAN -n $APP --runtime "DOTNETCORE:9.0"
+az webapp update -g $RG -n $APP --https-only true
+az webapp identity assign -g $RG -n $APP
+
+az webapp config appsettings set -g $RG -n $APP --settings \
+  "HAUL_API_DB_CONN=Server=tcp:$SQL.database.windows.net,1433;Database=$DB;Authentication=Active Directory Managed Identity;Encrypt=True;Connect Timeout=90;ConnectRetryCount=6;ConnectRetryInterval=10" \
+  "HAUL_API_CORS_ORIGINS=https://<vercel-domain>"
+```
+
+### 6. Database user for the API
+
+In the portal, open the database's **Query editor**, sign in with Entra, and
+run the managed-identity block at the bottom of `db/readonly-login.sql`
+(`CREATE USER [haulcycle-api] FROM EXTERNAL PROVIDER` plus `db_datareader`).
+The user name is the web app's name. Then remove your IP rule:
+
+```bash
+az sql server firewall-rule delete -g $RG -s $SQL -n TempMyIp
+```
+
+### 7. OIDC for CI deploys
+
+```bash
+APP_ID=$(az ad app create --display-name haulcycle-github-deploy --query appId -o tsv)
+az ad sp create --id $APP_ID
+
+az ad app federated-credential create --id $APP_ID --parameters "{
+  \"name\": \"github-main\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:$REPO:ref:refs/heads/main\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+az role assignment create --assignee $APP_ID --role "Website Contributor" \
+  --scope $(az webapp show -g $RG -n $APP --query id -o tsv)
+
+gh variable set AZURE_CLIENT_ID       -R $REPO -b "$APP_ID"
+gh variable set AZURE_TENANT_ID       -R $REPO -b "$TENANT_ID"
+gh variable set AZURE_SUBSCRIPTION_ID -R $REPO -b "$SUB_ID"
+```
+
+These are repository variables, not secrets: they identify, they don't
+authenticate. `.github/workflows/ci.yml` skips the deploy job until
+`AZURE_CLIENT_ID` is set, then deploys the API on every push to `main` that
+touches `api/`, after the tests pass.
+
+### 8. Vercel
+
+Import the repository in Vercel with **Root Directory** `web` and these
+Production environment variables:
+
+- `VITE_API_BASE_URL=https://haulcycle-api.azurewebsites.net`
+- `VITE_HIDE_LIVE_TOGGLE=true`
+
+Put the resulting domain in `HAUL_API_CORS_ORIGINS` (step 5).
+`web/vercel.json` rewrites deep links such as `/trucks/T07` to `index.html`.
+
+### Checks and teardown
+
+```bash
+curl https://haulcycle-api.azurewebsites.net/health
+curl https://haulcycle-api.azurewebsites.net/api/meta   # may take a minute after idle
+```
+
+API docs are at `/scalar/v1`. `az group delete -n $RG` removes the Azure
+resources; delete the app registration (`az ad app delete --id $APP_ID`) and
+the budget separately.
 
 ## Azure cost notes
 
