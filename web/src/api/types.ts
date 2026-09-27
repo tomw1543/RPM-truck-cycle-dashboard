@@ -349,3 +349,124 @@ export interface ScheduleComplianceData {
   summary: ComplianceSummary
   shifts: ShiftCompliance[]
 }
+
+/** OptimiserEndpoints.OptimiserPlanGainData - one plan type's whole-window gain vs Original.
+ * TonnesGained's min/max are a conservative/optimistic bound (sum of per-shift candidate.Min -
+ * original.Max, and candidate.Max - original.Min), not a statistically derived range for the sum
+ * - see OptimiserSummaryCalculator's doc comment. QueueHoursSaved/FuelLitresSaved/TruckHoursSaved
+ * are Original minus the candidate, summed per shift - positive always means "the candidate used
+ * less" (a negative value means it used more, e.g. Leaner can burn more fuel while still saving
+ * truck-hours). */
+export interface OptimiserPlanGain {
+  tonnesGainedMean: number
+  tonnesGainedMin: number
+  tonnesGainedMax: number
+  queueHoursSaved: number
+  fuelLitresSaved: number
+  truckHoursSaved: number
+  trucksStoodDown: number
+}
+
+/** OptimiserEndpoints.OptimiserShiftHeadlineData - one shift's row for the shift picker.
+ * moreOutputTonnesGainedMean/leanerTruckHoursSavedMean are null when hasResults is false. */
+export interface OptimiserShiftHeadline {
+  shiftDate: string
+  shiftName: string
+  hasResults: boolean
+  moreOutputTonnesGainedMean: number | null
+  leanerTruckHoursSavedMean: number | null
+}
+
+/** OptimiserEndpoints.OptimiserSummaryData - GET /api/optimiser/summary. shifts is newest first. */
+export interface OptimiserSummaryData {
+  shiftsOptimised: number
+  shiftsNotOptimised: number
+  moreOutput: OptimiserPlanGain
+  leaner: OptimiserPlanGain
+  shifts: OptimiserShiftHeadline[]
+}
+
+/** OptimiserEndpoints.RangeData - mean/min/max over a plan's SeedCount replays. For TruckHours
+ * and TrucksStoodDown, min/max always equal mean - those are plan-determined, not random. */
+export interface OptimiserRange {
+  mean: number
+  min: number
+  max: number
+}
+
+/** OptimiserEndpoints.OptimiserOutcomeData - one plan's outcome, every field as a range. */
+export interface OptimiserOutcome {
+  totalTonnes: OptimiserRange
+  crusherTonnes: OptimiserRange
+  romTonnes: OptimiserRange
+  wasteTonnes: OptimiserRange
+  cycles: OptimiserRange
+  queueHours: OptimiserRange
+  fuelLitres: OptimiserRange
+  truckHours: OptimiserRange
+  trucksStoodDown: OptimiserRange
+}
+
+/** OptimiserEndpoints.OptimiserAssignmentData - one truck's assignment under one plan.
+ * routeName/loaderName/destinationName are null for an unavailable or stood-down truck.
+ * moveReason is null for Original and for any truck left on its Original route - otherwise it's
+ * built by the API at read time (MoveReasonCalculator), from this plan's own assignments, loader
+ * stats and tonnes against Original's, so it only ever states things that are actually true. */
+export interface OptimiserAssignment {
+  truckName: string
+  routeName: string | null
+  loaderName: string | null
+  destinationName: string | null
+  isStoodDown: boolean
+  isUnavailable: boolean
+  moveReason: string | null
+}
+
+/** OptimiserEndpoints.OptimiserLoaderStatData - one loader's stats under one plan, averaged
+ * over the plan's replays. utilisation is a 0-1 fraction; matchFactor is a plain ratio. */
+export interface OptimiserLoaderStat {
+  loaderName: string
+  trucks: number
+  avgQueueMin: number
+  loadingMin: number
+  utilisation: number
+  matchFactor: number
+}
+
+export type OptimiserPlanType = 'Original' | 'MoreOutput' | 'Leaner'
+
+/** OptimiserEndpoints.OptimiserPlanData - one plan (Original/MoreOutput/Leaner) for one shift.
+ * planSummary is null for Original (there's no "candidate vs Original" to summarise for Original
+ * itself) - otherwise a headline sentence built from the loader stats' before/after truck counts,
+ * e.g. "L3 lost 2 trucks (average queue 6.1 to 2.2 min); L1 gained 2 trucks (utilisation 20% to 65%).
+ * Stood down 3 trucks." */
+export interface OptimiserPlan {
+  planType: OptimiserPlanType
+  seedCount: number
+  planSummary: string | null
+  outcome: OptimiserOutcome
+  assignments: OptimiserAssignment[]
+  loaderStats: OptimiserLoaderStat[]
+}
+
+/** OptimiserEndpoints.ActualShiftOutcomeData - the shift as it actually ran (vw_CycleDetail),
+ * for the faithfulness comparison against replayed Original. */
+export interface ActualShiftOutcome {
+  crusherTonnes: number
+  romTonnes: number
+  wasteTonnes: number
+  totalTonnes: number
+  cycles: number
+  queueHours: number
+  fuelLitres: number
+}
+
+/** OptimiserEndpoints.OptimiserShiftDetailData - GET /api/optimiser/shifts/{shiftDate}/{shiftName}. */
+export interface OptimiserShiftDetailData {
+  shiftDate: string
+  shiftName: string
+  original: OptimiserPlan
+  moreOutput: OptimiserPlan
+  leaner: OptimiserPlan
+  actual: ActualShiftOutcome
+}

@@ -199,4 +199,82 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
             cancellationToken: ct));
         return rows.AsList();
     }
+
+    private const string OptimisedPlanColumns = """
+        ShiftDate, ShiftName, PlanType, SeedCount,
+        TotalTonnesMean, TotalTonnesMin, TotalTonnesMax,
+        CrusherTonnesMean, CrusherTonnesMin, CrusherTonnesMax,
+        RomTonnesMean, RomTonnesMin, RomTonnesMax,
+        WasteTonnesMean, WasteTonnesMin, WasteTonnesMax,
+        CyclesMean, CyclesMin, CyclesMax,
+        QueueHoursMean, QueueHoursMin, QueueHoursMax,
+        FuelLitresMean, FuelLitresMin, FuelLitresMax,
+        TruckHoursMean, TruckHoursMin, TruckHoursMax,
+        TrucksStoodDownMean, TrucksStoodDownMin, TrucksStoodDownMax
+        """;
+
+    /// <summary>Every optimised plan (Original/MoreOutput/Leaner, 3 rows per optimised shift)
+    /// whose ShiftDate falls in the window - for /api/optimiser/summary. A shift with no
+    /// --optimise results yet simply has no rows here.</summary>
+    public async Task<IReadOnlyList<OptimisedPlanRow>> GetOptimisedPlansAsync(DateOnly fromDate, DateOnly toDate, string? shift, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        var sql = $"""
+            SELECT {OptimisedPlanColumns}
+            FROM dbo.vw_OptimisedPlanDetail
+            WHERE ShiftDate >= @FromDate AND ShiftDate <= @ToDate
+              AND (@Shift IS NULL OR ShiftName = @Shift);
+            """;
+        var rows = await conn.QueryAsync<OptimisedPlanRow>(new CommandDefinition(
+            sql,
+            new { FromDate = fromDate.ToDateTime(TimeOnly.MinValue), ToDate = toDate.ToDateTime(TimeOnly.MinValue), Shift = shift },
+            cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>The 3 plan rows (Original/MoreOutput/Leaner) for one shift, or an empty list if
+    /// that shift has no --optimise results yet.</summary>
+    public async Task<IReadOnlyList<OptimisedPlanRow>> GetOptimisedPlansForShiftAsync(DateOnly shiftDate, string shiftName, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        var sql = $"""
+            SELECT {OptimisedPlanColumns}
+            FROM dbo.vw_OptimisedPlanDetail
+            WHERE ShiftDate = @ShiftDate AND ShiftName = @ShiftName;
+            """;
+        var rows = await conn.QueryAsync<OptimisedPlanRow>(new CommandDefinition(
+            sql, new { ShiftDate = shiftDate.ToDateTime(TimeOnly.MinValue), ShiftName = shiftName }, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Every truck's assignment under every plan for one shift (up to 3 x fleet size
+    /// rows) - RouteName/LoaderName/DestinationName are null for an unavailable or stood-down
+    /// truck. Does not select MoveReason - that stored column is dead (the generator writes NULL
+    /// to it now); MoveReasonCalculator builds the sentence at read time instead.</summary>
+    public async Task<IReadOnlyList<OptimisedAssignmentRow>> GetOptimisedAssignmentsForShiftAsync(DateOnly shiftDate, string shiftName, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT PlanType, TruckName, RouteName, LoaderName, DestinationName, IsStoodDown, IsUnavailable
+            FROM dbo.vw_OptimisedAssignmentDetail
+            WHERE ShiftDate = @ShiftDate AND ShiftName = @ShiftName;
+            """;
+        var rows = await conn.QueryAsync<OptimisedAssignmentRow>(new CommandDefinition(
+            sql, new { ShiftDate = shiftDate.ToDateTime(TimeOnly.MinValue), ShiftName = shiftName }, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Every loader's stats under every plan for one shift (up to 3 x loader count rows).</summary>
+    public async Task<IReadOnlyList<OptimisedLoaderStatRow>> GetOptimisedLoaderStatsForShiftAsync(DateOnly shiftDate, string shiftName, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT PlanType, LoaderName, Trucks, AvgQueueMin, LoadingMin, Utilisation, MatchFactor
+            FROM dbo.vw_OptimisedLoaderStatDetail
+            WHERE ShiftDate = @ShiftDate AND ShiftName = @ShiftName;
+            """;
+        var rows = await conn.QueryAsync<OptimisedLoaderStatRow>(new CommandDefinition(
+            sql, new { ShiftDate = shiftDate.ToDateTime(TimeOnly.MinValue), ShiftName = shiftName }, cancellationToken: ct));
+        return rows.AsList();
+    }
 }

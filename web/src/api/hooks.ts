@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, apiGet } from './client'
-import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, Meta, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
+import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, Meta, OptimiserShiftDetailData, OptimiserSummaryData, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
 
 /** Matches the server's 30s output-cache policy on /api/meta and /api/fleet/summary
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
@@ -85,6 +85,32 @@ export function useScheduleCompliance(params: TruckWindowParams, live: boolean) 
         shift: params.shift,
       }),
     refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+export function useOptimiserSummary(params: TruckWindowParams, live: boolean) {
+  return useQuery({
+    queryKey: ['optimiser-summary', params],
+    queryFn: () =>
+      apiGet<Envelope<OptimiserSummaryData>>('/api/optimiser/summary', {
+        from: params.from,
+        to: params.to,
+        shift: params.shift,
+      }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+/** Disabled until both a shift date and name are picked - the shift picker/preselection sets
+ * these once the page has something to select. A 404 (not optimised yet) won't resolve on
+ * retry, same convention as useTruckDetail's unknown-truck-name case. */
+export function useOptimiserShift(shiftDate: string | undefined, shiftName: string | undefined, live: boolean) {
+  return useQuery({
+    queryKey: ['optimiser-shift', shiftDate, shiftName],
+    queryFn: () => apiGet<Envelope<OptimiserShiftDetailData>>(`/api/optimiser/shifts/${shiftDate}/${shiftName}`),
+    enabled: Boolean(shiftDate && shiftName),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   })
 }
 

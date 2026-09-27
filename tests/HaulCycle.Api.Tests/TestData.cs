@@ -39,6 +39,60 @@ internal static class TestData
     public static DelayRow Delay(string truck, DateTime start, DateTime end, string reason = "Breakdown", bool isPlanned = false) =>
         new(truck, start, end, reason, isPlanned);
 
+    public static OptimisedPlanRow OptimisedPlan(
+        string planType,
+        DateOnly? shiftDate = null,
+        string shiftName = "Day",
+        int seedCount = 5,
+        decimal totalTonnesMean = 1000m, decimal totalTonnesMin = 950m, decimal totalTonnesMax = 1050m,
+        decimal crusherTonnesMean = 400m, decimal crusherTonnesMin = 380m, decimal crusherTonnesMax = 420m,
+        decimal romTonnesMean = 300m, decimal romTonnesMin = 285m, decimal romTonnesMax = 315m,
+        decimal wasteTonnesMean = 300m, decimal wasteTonnesMin = 285m, decimal wasteTonnesMax = 315m,
+        decimal cyclesMean = 200m, decimal cyclesMin = 190m, decimal cyclesMax = 210m,
+        decimal queueHoursMean = 10m, decimal queueHoursMin = 8m, decimal queueHoursMax = 12m,
+        decimal fuelLitresMean = 5000m, decimal fuelLitresMin = 4800m, decimal fuelLitresMax = 5200m,
+        decimal truckHoursMean = 144m, decimal truckHoursMin = 144m, decimal truckHoursMax = 144m,
+        decimal trucksStoodDownMean = 0m, decimal trucksStoodDownMin = 0m, decimal trucksStoodDownMax = 0m) =>
+        new(
+            shiftDate ?? new DateOnly(2026, 9, 1), shiftName, planType, seedCount,
+            totalTonnesMean, totalTonnesMin, totalTonnesMax,
+            crusherTonnesMean, crusherTonnesMin, crusherTonnesMax,
+            romTonnesMean, romTonnesMin, romTonnesMax,
+            wasteTonnesMean, wasteTonnesMin, wasteTonnesMax,
+            cyclesMean, cyclesMin, cyclesMax,
+            queueHoursMean, queueHoursMin, queueHoursMax,
+            fuelLitresMean, fuelLitresMin, fuelLitresMax,
+            truckHoursMean, truckHoursMin, truckHoursMax,
+            trucksStoodDownMean, trucksStoodDownMin, trucksStoodDownMax);
+
+    public static OptimisedAssignmentRow OptimisedAssignment(
+        string planType,
+        string truckName,
+        string? routeName,
+        string? loaderName,
+        string? destinationName,
+        bool isStoodDown = false,
+        bool isUnavailable = false) =>
+        new(planType, truckName, routeName, loaderName, destinationName, isStoodDown, isUnavailable);
+
+    public static OptimisedLoaderStatRow OptimisedLoaderStat(
+        string planType,
+        string loaderName,
+        int trucks,
+        decimal avgQueueMin,
+        decimal utilisation,
+        decimal loadingMin = 300m,
+        decimal matchFactor = 1m) =>
+        new(planType, loaderName, trucks, avgQueueMin, loadingMin, utilisation, matchFactor);
+
+    public static RouteReferenceRow RouteReference(
+        string routeName,
+        string loaderName,
+        string destinationName,
+        decimal distanceKm,
+        decimal bookCycleMin = 20m) =>
+        new(routeName, loaderName, destinationName, distanceKm, bookCycleMin);
+
     public static ScheduleRow Schedule(
         string truck,
         string? destination = "ROM pad",

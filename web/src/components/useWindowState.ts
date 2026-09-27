@@ -20,7 +20,13 @@ export function useWindowState(): [WindowState, (next: WindowState) => void] {
   }
 
   const setState = (next: WindowState) => {
-    const params = new URLSearchParams()
+    // Preserve any other search params already on the URL (e.g. /optimiser's shiftDate/
+    // shiftName selection) - only from/to/shift belong to this hook, so it must not wipe out
+    // params it doesn't own.
+    const params = new URLSearchParams(searchParams)
+    params.delete('from')
+    params.delete('to')
+    params.delete('shift')
     if (next.from) params.set('from', next.from)
     if (next.to) params.set('to', next.to)
     if (next.shift) params.set('shift', next.shift)

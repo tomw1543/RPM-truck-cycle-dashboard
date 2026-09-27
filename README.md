@@ -251,6 +251,21 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
     `phase`, `nativeAmount`, `nativeUnit` and `equivalentTonnes`.
   - `hotspots`: `top` (the 10 loader date-hours with the most excess queue
     minutes) and `profile` (excess queue minutes by loader and hour of day).
+- **`GET /api/optimiser/summary`**: same `from`/`to`/`shift` params,
+  output-cached like the other data endpoints. `data` is the whole-window
+  headline for each candidate plan type (`moreOutput`, `leaner`) against
+  Original, plus a per-shift list for the shift picker - see "Optimiser"
+  below for what the numbers mean and how the ranges are built.
+- **`GET /api/optimiser/shifts/{shiftDate}/{shiftName}`**: all three plans
+  (`original`, `moreOutput`, `leaner`) for one shift - each with `outcome`
+  (every field as a `{ mean, min, max }` range), `assignments` (one row per
+  truck: `routeName`, `loaderName`, `destinationName`, `isStoodDown`,
+  `isUnavailable`, `moveReason`) and `loaderStats` (one row per loader:
+  `trucks`, `avgQueueMin`, `loadingMin`, `utilisation`, `matchFactor`) - plus
+  `actual`, the shift's real recorded outcome from `vw_CycleDetail`, for
+  comparing against replayed Original. `404` with a `ProblemDetails` body if
+  the shift has no `--optimise` results yet (one form covers both "the shift
+  doesn't exist" and "it exists but hasn't been optimised").
 - **`GET /api/schedule/compliance`**: same `from`/`to`/`shift` params, on the
   same shift-grained basis as plan vs actual. `data.summary` is the
   complete-shift totals for the window: `plannedTonnes`, `actualTonnes`,
@@ -386,7 +401,19 @@ schedule page (`/schedule`, against `/api/schedule/compliance`) shows
 summary tiles (totals, percent of plan, best/worst shift), a planned-vs-actual
 tonnes chart per shift, and a shift table (newest first, expandable to a
 per-truck breakdown) with below-typical shifts and truck-shifts marked the
-same way. Set `VITE_API_BASE_URL` (see
+same way; each row also has an "Optimise this shift" link into the optimiser
+page below. The optimiser page (`/optimiser`, against `/api/optimiser/summary`
+and `/api/optimiser/shifts/{shiftDate}/{shiftName}`) is the only page whose
+window defaults to the whole `--optimise`d period instead of the site-wide
+rolling 7 days, since the headline is only meaningful over the period
+`--optimise` actually covered. It shows headline tiles with ranges for both
+plan types, a shift picker table (newest first), a keyboard-usable three-way
+selector (Original / More output / Leaner), and, for the selected plan: a
+moves list with reasons, a before/after loader table, an outcome comparison
+against Original with ranges, and the shift's actual recorded outcome next to
+replayed Original for the faithfulness check. A shift with no `--optimise`
+results yet shows "not optimised yet" instead of an error. See "Optimiser"
+below for what the engine behind this page does. Set `VITE_API_BASE_URL` (see
 `web/.env.example`) to point a production build at a deployed API instead of
 the dev proxy.
 
@@ -416,9 +443,22 @@ the dev proxy.
 - **Schedules**: one row per truck per shift, built by the scheduler before
   the shift starts: an assigned route/loader with planned cycles and tonnes,
   or a reason the truck is unavailable.
-- **vw_CycleDetail** / **vw_ScheduleDetail** / **vw_LoaderDelayDetail**:
-  pre-joined views with names instead of ids, for downstream consumers to
-  query directly.
+- **OptimisedPlans**: one row per (shift, plan type) `--optimise` produced -
+  `Original` (the stored `Schedules` for that shift), `MoreOutput` or
+  `Leaner` - with every outcome's mean and min/max over 5 replay seeds.
+  Replaced wholesale by every `--optimise` run.
+- **OptimisedAssignments**: one row per truck per plan - its route (null if
+  unavailable or stood down), `IsStoodDown`, `IsUnavailable`, and a
+  `MoveReason` column that is now always `NULL` (dead - see "Move reasons"
+  below).
+- **OptimisedLoaderStats**: one row per loader per plan - trucks assigned,
+  average queue, loading minutes, utilisation and match factor, averaged
+  over the plan's replays.
+- **vw_CycleDetail** / **vw_ScheduleDetail** / **vw_LoaderDelayDetail** /
+  **vw_OptimisedPlanDetail** / **vw_OptimisedAssignmentDetail** /
+  **vw_OptimisedLoaderStatDetail**: pre-joined views with names instead of
+  ids, for downstream consumers (including the read-only API) to query
+  directly.
 
 ## Glossary
 
@@ -533,6 +573,130 @@ t/shift; Waste dump (L2, 4.8 km/8%, book cycle 28.3 min) ~22,400 t/shift;
 Crusher (L3, 2.1 km/5%, book cycle 14.3 min) ~44,400 t/shift. These live in
 code only (no `ShiftTargets` table) since they're a fixed function of the
 home routes' book rates.
+
+## Optimiser
+
+`--optimise` (data generator) reads every complete shift's `Schedules`,
+`Delays`, `LoaderDelays` and reference data, searches for a better
+assignment than the shift as scheduled, and writes the results back for the
+API and the `/optimiser` page to read. It never changes `Schedules` itself -
+Original, MoreOutput and Leaner are three separate rows in `OptimisedPlans`,
+all judged against the same shift.
+
+**What it does.** For each complete shift, local search starts from the
+shift's stored schedule ("Original") and searches two objectives:
+
+- **MoreOutput**: maximise mean total tonnes.
+- **Leaner**: minimise truck-hours, then fuel litres, then queue hours, in
+  that order (lexicographic). Leaner starts from the MoreOutput plan, which
+  has slack, and stands trucks down greedily: it tries standing down each
+  working truck, repairs the plan with the same local search until every
+  destination is back at its floor, commits the best feasible stand-down,
+  and repeats until no truck can go. Single moves and swaps alone can't do
+  this, because standing a truck down only stays feasible if another truck
+  covers its destination in the same step.
+
+Both are constrained to never score below Original's mean tonnes to any one
+destination (Crusher, ROM pad, Waste dump) - a plan can move tonnes around
+between destinations, but never at the cost of shorting one of them relative
+to what actually happened. The search considers every available truck's
+single-truck move (to one of the other 8 routes, or stood down) and every
+pairwise swap of two available trucks' routes, taking the best improving,
+feasible neighbour each iteration until none improves. Unavailable trucks
+(a delay covering the whole shift) are never touched.
+
+**Fairness method.** Every truck's random draws in a replay come from its
+own stream, seeded deterministically from `(seed, shift start, truck id)`;
+loader-side randomness gets the same treatment. Moving one truck to a
+different route never changes any other truck's draws - verified directly by
+`--replay-selfcheck` (replaying the same plan twice gives an identical
+outcome; moving one truck leaves every other truck's payload draws matching
+in the common prefix). Loader delays for the shift are read back from
+`LoaderDelays` as a fixed input, shared by every plan variant and every
+replay seed, never redrawn per plan. Each plan is scored as the mean over 5
+fixed replay seeds (independent of the data-generation `--seed`), with a
+range (min to max across those seeds) reported alongside the mean - a
+range's low and high can come from different seeds, since it's the extremes
+of each field independently, not one coherent worst or best replay.
+
+**Running it.**
+
+```sh
+dotnet run --project data-generator -- --optimise
+```
+
+Reads Schedules/Delays/LoaderDelays/reference data, runs the whole search in
+memory, then writes `OptimisedPlans`/`OptimisedAssignments`/
+`OptimisedLoaderStats` in one transaction that clears all three tables first
+- a fresh run always replaces whatever was there before, never appends to
+it. Prints progress per shift and the total runtime. Re-run it after any
+fresh data load, including one against Azure (see "Deploying" below) - the
+results are only ever as current as the `Schedules`/`Delays` they were
+computed from. `--optimise-limit N` (not part of the documented CLI surface)
+caps the run to the first N complete shifts, oldest first, for a quick
+timing check without processing the whole history.
+
+**Measured** (seed-42, 30-day local run, 60 shifts optimised: every shift
+the data fully covers; the partial first shift and the unfinished last one
+are skipped):
+
+- Runtime: about 24.5 minutes (1,471 s) for the whole run on a laptop.
+  Leaner dominates it, because every stand-down it tries is followed by a
+  repair search.
+- MoreOutput: +773,378 t over the period (+24.7%; range 621,026 to 931,976 t,
+  see "the range convention" below), 163.9 queue hours saved, 27,188 L fuel
+  saved (2.3%), with the same trucks. Fuel per tonne falls from 0.385 L/t to
+  0.302 L/t.
+- Leaner: 1,032 truck-hours saved (12.3%), 86 trucks stood down across the
+  60 shifts (1.4 per shift on average, 0 to 4), 187,453 L fuel saved
+  (15.5%), 86.5 queue hours saved, and still +79,276 t (2.5%) above
+  Original. It uses less fuel than Original on every shift.
+- Constraint check across all 60 shifts (180 plans): 0 destination-floor
+  violations, 0 shifts where either plan used more truck-hours than
+  Original, 0 shifts where either plan's total fell below Original's.
+- The range convention: a plan type's whole-period range is the sum, across
+  every shift, of that shift's own (candidate min - Original max) for the
+  low end and (candidate max - Original min) for the high end - a
+  conservative/optimistic bound, not a statistically derived range for the
+  sum. That is why Leaner's tonnes range dips below zero even though its
+  mean gain is positive on every shift.
+- Faithfulness (replayed Original vs the shift's actual recorded total
+  tonnes): 2.58% mean absolute difference across the 60 shifts, 7.97% at
+  worst.
+- The run is deterministic: two runs over the same data give identical
+  totals.
+
+**Move reasons.** Built by the API at read time (`Kpi/MoveReasonCalculator.cs`),
+not by the generator - the stored `OptimisedAssignments.MoveReason` column is
+always `NULL`, so a wording change never needs a 25-minute `--optimise`
+rerun. Each move away from Original states only facts verified against that
+plan's own assignments, loader stats and tonnes, combining up to two
+clauses, most relevant first:
+
+- **Stood down**: "Stood down: the other trucks covered its work, with every
+  destination at or above its original tonnes.", plus a queue-fell clause if
+  the vacated loader's average queue actually dropped.
+- **Moved to a different loader**: queue relief only if Original's average
+  queue at the old loader exceeds the new loader's by 0.5 min or more;
+  spare capacity only if the new loader's Original utilisation is lower than
+  the old loader's; a shorter-route clause if the new route is shorter; a
+  destination clause if the new destination's candidate tonnes sit within 5%
+  above Original's there (a binding constraint, not incidental).
+- **Same loader, different destination**: states the switch, plus the
+  route-length or destination clause if either holds.
+- **Fallback**: "Part of a wider rebalance; see the loader table." when none
+  of the above holds - never an invented cause.
+
+This replaced an earlier generator-side template that stated "spare
+capacity" and "relieves queueing" from a fixed sentence shape regardless of
+whether either was true - e.g. a move from an under-used loader to a busier
+one still claimed the busier loader had "spare capacity". The optimiser page
+also shows one plan-level summary sentence per candidate, e.g. "L2 lost 1
+truck (average queue 4.3 to 2.7 min) and L3 lost 3 (average queue 6.1 to
+1.3 min); L1 gained 1 truck (utilisation 20% to 50%). Stood down 3
+trucks.", built from each loader's before/after truck count. Every loader
+gets its own count, because with stand-downs the trucks lost and gained
+don't balance.
 
 ## Planted problems
 
@@ -851,6 +1015,7 @@ connection can take up to a minute while the database resumes.
 export HAUL_DB_CONN="Server=tcp:$SQL.database.windows.net,1433;Database=$DB;Authentication=Active Directory Default;Encrypt=True;Connect Timeout=90"
 dotnet run --project data-generator -- --reset-schema
 dotnet run --project data-generator
+dotnet run --project data-generator -- --optimise
 ```
 
 The loader-contention rewrite (see "Numbers" above) added a table
@@ -858,6 +1023,17 @@ The loader-contention rewrite (see "Numbers" above) added a table
 needs a `--reset-schema` and a fresh `dotnet run --project data-generator`
 against it once this change is ready to deploy - the steps above already
 cover this, they just haven't been re-run against the deployed database yet.
+
+The `--optimise` step is not optional once the optimiser slice is deployed:
+`/api/optimiser/summary` and `/api/optimiser/shifts/{shiftDate}/{shiftName}`
+only ever read back whatever `OptimisedPlans`/`OptimisedAssignments`/
+`OptimisedLoaderStats` already hold, so a fresh data load with no
+`--optimise` run after it leaves the optimiser page showing "not optimised
+yet" for every shift. Re-run `--optimise` (same command, same `HAUL_DB_CONN`)
+after every subsequent Azure data reload too, for the same reason. The run
+itself happens on your machine and takes about 25 minutes for 30 days of
+shifts; only the final write touches the database, so keep the temporary
+client IP rule in place until it finishes.
 
 ### 5. App Service
 

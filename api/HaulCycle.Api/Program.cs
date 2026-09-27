@@ -75,6 +75,7 @@ app.MapTruckEndpoints();
 app.MapRouteEndpoints();
 app.MapBottleneckEndpoints();
 app.MapScheduleEndpoints();
+app.MapOptimiserEndpoints();
 
 app.Run();
 return 0;

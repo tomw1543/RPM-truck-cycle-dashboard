@@ -46,6 +46,32 @@ export function fmtTonnesCompact(value: number | null | undefined): string {
   )
 }
 
+/** value is a signed count/amount (an optimiser gain or saving) - rendered with an explicit
+ * +/- sign, no unit. A negative "saved" value means the candidate plan used MORE than Original. */
+export function fmtSignedNumber(value: number | null | undefined, digits = 1): string {
+  return fmt(value, (v) => `${v >= 0 ? '+' : ''}${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })}`)
+}
+
+export function fmtSignedTonnes(value: number | null | undefined): string {
+  return fmt(value, (v) => `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString()} t`)
+}
+
+export function fmtHours(value: number | null | undefined, digits = 1): string {
+  return fmt(value, (v) => `${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} h`)
+}
+
+export function fmtSignedHours(value: number | null | undefined, digits = 1): string {
+  return fmt(value, (v) => `${v >= 0 ? '+' : ''}${v.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits })} h`)
+}
+
+export function fmtLitres(value: number | null | undefined): string {
+  return fmt(value, (v) => `${Math.round(v).toLocaleString()} L`)
+}
+
+export function fmtSignedLitres(value: number | null | undefined): string {
+  return fmt(value, (v) => `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString()} L`)
+}
+
 /** asOf comes from the API as a DateTime serialized to an ISO-ish string in mine time
  * (Australia/Brisbane, no offset info we should reinterpret). We must not run it through
  * the browser's local time zone, so this only reformats the literal date/time components. */

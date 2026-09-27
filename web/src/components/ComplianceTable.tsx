@@ -78,6 +78,7 @@ export function ComplianceTable({ shifts, windowQuery }: ComplianceTableProps) {
               <th className="px-3 py-2 text-right font-medium">Actual tonnes</th>
               <th className="px-3 py-2 text-right font-medium">% of plan</th>
               <th className="px-3 py-2 text-right font-medium">Cycles (actual / planned)</th>
+              <th className="px-3 py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
@@ -126,10 +127,18 @@ export function ComplianceTable({ shifts, windowQuery }: ComplianceTableProps) {
                     <td className="px-3 py-2 text-right tabular-nums text-slate-300">
                       {fmtInt(shift.actualCycles)} / {fmtInt(shift.plannedCycles)}
                     </td>
+                    <td className="px-3 py-2 text-right">
+                      <Link
+                        to={`/optimiser?shiftDate=${shift.shiftDate}&shiftName=${shift.shiftName}`}
+                        className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-cyan-300"
+                      >
+                        Optimise this shift
+                      </Link>
+                    </td>
                   </tr>
                   {isExpanded && (
                     <tr id={panelId} className="border-b border-slate-800/60">
-                      <td colSpan={6} className="p-0">
+                      <td colSpan={7} className="p-0">
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="border-b border-slate-800/60 text-left text-xs uppercase tracking-wide text-slate-500">

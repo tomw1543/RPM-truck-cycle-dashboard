@@ -37,6 +37,21 @@ class LoaderPlanner
         _plannedUntil = start;
     }
 
+    /// <summary>Builds a planner already "planned" through plannedUntil from a fixed list of
+    /// loader delays (typically read back from dbo.LoaderDelays), so EnsurePlanned never draws
+    /// any further loader-side randomness for a replay that stays within that window. Used by
+    /// the optimiser: loader delays for a shift are a fixed input shared by every plan variant
+    /// and every replay seed, never redrawn per plan (see SimulationEngine.ReplayShift). The
+    /// FreeAt dictionary starts empty either way - a replay always starts each loader "free",
+    /// the same convention --replay-selfcheck already uses.</summary>
+    public static LoaderPlanner FromExisting(List<Loader> loaders, IEnumerable<LoaderDelayRow> existingDelays, DateTime plannedUntil, Random rng)
+    {
+        var planner = new LoaderPlanner(loaders, rng, plannedUntil);
+        foreach (var d in existingDelays)
+            planner._delays.Add(d);
+        return planner;
+    }
+
     public IReadOnlyList<LoaderDelayRow> AllDelays => _delays;
 
     /// <summary>Deep-enough copy for independent replay: the clone gets its own delay list and
@@ -44,7 +59,14 @@ class LoaderPlanner
     /// affects the other. Loaders are shared by reference (read-only reference data) but the
     /// clone gets its own Random, since further EnsurePlanned calls draw from it - pass a
     /// freshly seeded one if the two replays must not diverge only because of loader-side
-    /// randomness, or the same instance if you want them to share that stream on purpose.</summary>
+    /// randomness, or the same instance if you want them to share that stream on purpose.
+    ///
+    /// For a replay, the caller is expected to call EnsurePlanned(shiftEnd) on the base planner
+    /// before taking any clones, so no clone ever needs to draw again within that shift - the
+    /// rng passed here only matters if the planner is later asked to plan past shiftEnd. When it
+    /// does matter, seed it with SimulationEngine.SeededRandom(seed, shiftStart,
+    /// SimulationEngine.LoaderEntityId) so loader-side randomness is reproducible per (seed,
+    /// shift) the same way per-truck streams are.</summary>
     public LoaderPlanner Clone(Random rng)
     {
         var clone = new LoaderPlanner(_loaders, rng, _plannedUntil);
@@ -141,6 +163,41 @@ class LoaderPlanner
 /// No DB access anywhere in this class.</summary>
 static class SimulationEngine
 {
+    /// <summary>Entity id passed to SeededRandom for loader-side randomness (LoaderPlanner's
+    /// EnsurePlanned draws), which is not truck-specific. Any id outside the truck id range
+    /// would do; -1 is used because no truck ever has this id.</summary>
+    public const int LoaderEntityId = -1;
+
+    /// <summary>Deterministic seed for one entity's (a truck, or LoaderEntityId for loader-side
+    /// randomness) Random stream during a replay of one shift. Combines the data/replay seed,
+    /// the shift's start instant, and the entity id, so the resulting stream depends on nothing
+    /// else - not on which other trucks are in the replay, not on the order timelines are
+    /// created in, not on wall-clock time. Two replays of the same shift with the same seed
+    /// always give one entity the same stream, even if every other entity's assignment changes -
+    /// this is what lets the optimiser move one truck's route without disturbing any other
+    /// truck's draws.
+    ///
+    /// Deliberately hand-rolled instead of HashCode.Combine: HashCode.Combine randomizes its
+    /// output with a new seed every process run (by design, for DoS resistance), which would
+    /// make a replay's outcome different every time the generator runs even for the same inputs -
+    /// exactly what this method must not do.
+    ///
+    /// Not used by history or live mode: both keep consuming one shared Random the way they
+    /// always have (see the note on Simulator), so seed-42 history output is unaffected by this
+    /// method's existence.</summary>
+    public static Random SeededRandom(int seed, DateTime shiftStart, int entityId)
+    {
+        unchecked
+        {
+            long h = 17;
+            h = h * 31 + seed;
+            h = h * 31 + shiftStart.Ticks;
+            h = h * 31 + entityId;
+            var folded = (int)(h ^ (h >> 32));
+            return new Random(folded);
+        }
+    }
+
     /// <summary>Picks the eligible truck whose Cursor is earliest, ties broken by truck id -
     /// the one fixed tie-break rule the whole engine relies on for determinism. Returns null
     /// if no timeline is eligible.</summary>
@@ -193,16 +250,28 @@ static class SimulationEngine
     /// end up in it after the call), the same way RunToHorizon always does. To replay the same
     /// starting state under a second, independent assignment, pass loaderPlanner.Clone(...) for
     /// one of the two calls - the two replays must not share a LoaderPlanner instance or one
-    /// will see loader contention from the other's cycles.
+    /// will see loader contention from the other's cycles. Call EnsurePlanned(shiftEnd) on the
+    /// base LoaderPlanner (or its clones) BEFORE any replay of the shift, so every replay and
+    /// every plan variant sees the exact same loader-side delays (handover, spikes) as fixed
+    /// input - EnsurePlanned(upTo &lt;= shiftEnd) inside TruckTimeline.Next() is then a no-op for
+    /// the rest of the shift, and loader delays are never redrawn differently per plan.
+    ///
+    /// Determinism: `seed` (together with `shiftStart`) is fed through SeededRandom to build one
+    /// fresh, independent Random per truck, keyed only by that truck's own id - not by iteration
+    /// order, not by which other trucks are in routeByTruckId, not by their routes. Moving one
+    /// truck to a different route, or dropping another truck out of routeByTruckId entirely,
+    /// never changes any other truck's draw sequence. Give loader-side randomness (LoaderPlanner)
+    /// the same treatment by seeding it with SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId)
+    /// wherever it is constructed for a replay.
     ///
     /// Returns cycles and delays together, as RunToHorizon does; filter with OfType&lt;CycleRow&gt;()
-    /// if only cycles are wanted. Not called anywhere yet - wired up when the optimiser slice
-    /// lands.</summary>
+    /// if only cycles are wanted. Not called anywhere yet except --replay-selfcheck - wired up
+    /// for real when the optimiser slice lands.</summary>
     public static List<object> ReplayShift(
         Fleet fleet, Simulator sim, DateTime shiftStart, DateTime shiftEnd,
         IReadOnlyDictionary<int, int?> routeByTruckId,
         IReadOnlyDictionary<int, List<PendingDelay>> knownDelaysByTruckId,
-        LoaderPlanner loaderPlanner, Random rng)
+        LoaderPlanner loaderPlanner, int seed)
     {
         var shiftDate = DateOnly.FromDateTime(shiftStart.Date);
         var shiftName = shiftStart.Hour == 6 ? "Day" : "Night";
@@ -229,7 +298,8 @@ static class SimulationEngine
         {
             var truck = fleet.Trucks.First(t => t.Id == truckId);
             var knownDelays = knownDelaysByTruckId.TryGetValue(truckId, out var d) ? d : new List<PendingDelay>();
-            timelines.Add(new TruckTimeline(truck, shiftStart, rng, sim, loaderPlanner, fleet, Lookup, knownDelays));
+            var truckRng = SeededRandom(seed, shiftStart, truckId);
+            timelines.Add(new TruckTimeline(truck, shiftStart, truckRng, sim, loaderPlanner, fleet, Lookup, knownDelays));
         }
 
         return RunToHorizon(timelines, shiftEnd);

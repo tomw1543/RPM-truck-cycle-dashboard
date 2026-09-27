@@ -7,9 +7,15 @@
 
    Safe to re-run: it drops and recreates everything (a full reset). */
 
+DROP VIEW  IF EXISTS dbo.vw_OptimisedLoaderStatDetail;
+DROP VIEW  IF EXISTS dbo.vw_OptimisedAssignmentDetail;
+DROP VIEW  IF EXISTS dbo.vw_OptimisedPlanDetail;
 DROP VIEW  IF EXISTS dbo.vw_LoaderDelayDetail;
 DROP VIEW  IF EXISTS dbo.vw_ScheduleDetail;
 DROP VIEW  IF EXISTS dbo.vw_CycleDetail;
+DROP TABLE IF EXISTS dbo.OptimisedLoaderStats;
+DROP TABLE IF EXISTS dbo.OptimisedAssignments;
+DROP TABLE IF EXISTS dbo.OptimisedPlans;
 DROP TABLE IF EXISTS dbo.Schedules;
 DROP TABLE IF EXISTS dbo.Delays;
 DROP TABLE IF EXISTS dbo.Cycles;
@@ -118,6 +124,88 @@ CREATE TABLE dbo.Schedules (
     UnavailableReason   NVARCHAR(50)   NULL,
     CONSTRAINT UQ_Schedules_Shift_Truck UNIQUE (ShiftDate, ShiftName, TruckId)
 );
+
+/* One row per (shift, plan type) the optimiser produced: the shift's stored Schedules as
+   'Original', plus 'MoreOutput' and 'Leaner' candidates from local search. Every outcome is
+   scored as the mean over SeedCount (5) independent replays with per-truck deterministic RNG
+   streams (see SimulationEngine.SeededRandom); Mean/Min/Max are per-field extrema across those
+   replays, not a single coherent replay - a plan's Min TotalTonnes and Min QueueHours can come
+   from different seeds. TruckHours and TrucksStoodDown are plan-determined, not random, so their
+   Mean/Min/Max are always equal for a given plan - the three columns are kept for a uniform
+   shape across every outcome rather than because they vary. Replaced wholesale by every
+   --optimise run (TRUNCATE + reinsert), never appended to. */
+CREATE TABLE dbo.OptimisedPlans (
+    PlanId               INT           IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    ShiftDate            DATE          NOT NULL,
+    ShiftName            NVARCHAR(5)   NOT NULL CHECK (ShiftName IN ('Day', 'Night')),
+    PlanType             NVARCHAR(12)  NOT NULL CHECK (PlanType IN ('Original', 'MoreOutput', 'Leaner')),
+    SeedCount            INT           NOT NULL,
+    TotalTonnesMean      DECIMAL(9,1)  NOT NULL,
+    TotalTonnesMin       DECIMAL(9,1)  NOT NULL,
+    TotalTonnesMax       DECIMAL(9,1)  NOT NULL,
+    CrusherTonnesMean    DECIMAL(9,1)  NOT NULL,
+    CrusherTonnesMin     DECIMAL(9,1)  NOT NULL,
+    CrusherTonnesMax     DECIMAL(9,1)  NOT NULL,
+    RomTonnesMean        DECIMAL(9,1)  NOT NULL,
+    RomTonnesMin         DECIMAL(9,1)  NOT NULL,
+    RomTonnesMax         DECIMAL(9,1)  NOT NULL,
+    WasteTonnesMean      DECIMAL(9,1)  NOT NULL,
+    WasteTonnesMin       DECIMAL(9,1)  NOT NULL,
+    WasteTonnesMax       DECIMAL(9,1)  NOT NULL,
+    CyclesMean           DECIMAL(7,1)  NOT NULL,
+    CyclesMin            DECIMAL(7,1)  NOT NULL,
+    CyclesMax            DECIMAL(7,1)  NOT NULL,
+    QueueHoursMean       DECIMAL(7,2)  NOT NULL,
+    QueueHoursMin        DECIMAL(7,2)  NOT NULL,
+    QueueHoursMax        DECIMAL(7,2)  NOT NULL,
+    FuelLitresMean       DECIMAL(9,1)  NOT NULL,
+    FuelLitresMin        DECIMAL(9,1)  NOT NULL,
+    FuelLitresMax        DECIMAL(9,1)  NOT NULL,
+    TruckHoursMean       DECIMAL(6,1)  NOT NULL,
+    TruckHoursMin        DECIMAL(6,1)  NOT NULL,
+    TruckHoursMax        DECIMAL(6,1)  NOT NULL,
+    TrucksStoodDownMean  DECIMAL(4,1)  NOT NULL,
+    TrucksStoodDownMin   DECIMAL(4,1)  NOT NULL,
+    TrucksStoodDownMax   DECIMAL(4,1)  NOT NULL,
+    CreatedAt            DATETIME2(0)  NOT NULL,
+    CONSTRAINT UQ_OptimisedPlans_Shift_Type UNIQUE (ShiftDate, ShiftName, PlanType)
+);
+
+/* One row per truck per plan: its route under that plan (NULL if unavailable or stood down),
+   whether the optimiser stood it down (IsStoodDown - a plan decision on a truck that WAS
+   available) versus it being unavailable regardless of plan (IsUnavailable - carried over
+   unchanged from Schedules.UnavailableReason, never touched by local search).
+
+   MoveReason is dead: the generator now always writes NULL to it. The move-away-from-Original
+   sentence shown on the optimiser page is built by the API at read time (MoveReasonCalculator,
+   from this table's own rows plus OptimisedLoaderStats and OptimisedPlans), not stored here -
+   an owner decision so a wording change never needs a --optimise rerun. Left in place rather
+   than dropped now; remove it at the next schema change. */
+CREATE TABLE dbo.OptimisedAssignments (
+    OptimisedAssignmentId  INT           IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    PlanId                 INT           NOT NULL REFERENCES dbo.OptimisedPlans(PlanId),
+    TruckId                INT           NOT NULL REFERENCES dbo.Trucks(TruckId),
+    RouteId                INT           NULL REFERENCES dbo.Routes(RouteId),
+    IsStoodDown            BIT           NOT NULL,
+    IsUnavailable          BIT           NOT NULL,
+    MoveReason             NVARCHAR(300) NULL  -- dead column, always NULL now; see comment above
+);
+
+/* One row per loader per plan: Trucks is the plan's fixed assignment count (not random);
+   AvgQueueMin/LoadingMin/Utilisation/MatchFactor are averaged over the plan's SeedCount
+   replays. Utilisation = LoadingMin / (720 - loader-stopped minutes in the shift); MatchFactor
+   = Trucks x average load time / average truck cycle time at that loader (both zero if the
+   loader had no cycles that replay). */
+CREATE TABLE dbo.OptimisedLoaderStats (
+    OptimisedLoaderStatId  INT           IDENTITY(1,1) NOT NULL PRIMARY KEY,
+    PlanId                 INT           NOT NULL REFERENCES dbo.OptimisedPlans(PlanId),
+    LoaderId               INT           NOT NULL REFERENCES dbo.Loaders(LoaderId),
+    Trucks                 INT           NOT NULL,
+    AvgQueueMin            DECIMAL(6,2)  NOT NULL,
+    LoadingMin             DECIMAL(7,2)  NOT NULL,
+    Utilisation            DECIMAL(6,4)  NOT NULL,
+    MatchFactor            DECIMAL(6,3)  NOT NULL
+);
 GO
 
 /* A friendly, pre-joined view. The API (and later the "Ask your mine plan" tool)
@@ -200,4 +288,62 @@ SELECT
     ld.RateFactor
 FROM dbo.LoaderDelays AS ld
 JOIN dbo.Loaders AS l ON l.LoaderId = ld.LoaderId;
+GO
+
+/* Straight pass-through of OptimisedPlans - no joins needed at this grain - kept as a view
+   purely so the read-only API (db_datareader only) queries a vw_* the same way it does
+   everywhere else. */
+CREATE VIEW dbo.vw_OptimisedPlanDetail AS
+SELECT
+    p.PlanId, p.ShiftDate, p.ShiftName, p.PlanType, p.SeedCount,
+    p.TotalTonnesMean, p.TotalTonnesMin, p.TotalTonnesMax,
+    p.CrusherTonnesMean, p.CrusherTonnesMin, p.CrusherTonnesMax,
+    p.RomTonnesMean, p.RomTonnesMin, p.RomTonnesMax,
+    p.WasteTonnesMean, p.WasteTonnesMin, p.WasteTonnesMax,
+    p.CyclesMean, p.CyclesMin, p.CyclesMax,
+    p.QueueHoursMean, p.QueueHoursMin, p.QueueHoursMax,
+    p.FuelLitresMean, p.FuelLitresMin, p.FuelLitresMax,
+    p.TruckHoursMean, p.TruckHoursMin, p.TruckHoursMax,
+    p.TrucksStoodDownMean, p.TrucksStoodDownMin, p.TrucksStoodDownMax,
+    p.CreatedAt
+FROM dbo.OptimisedPlans AS p;
+GO
+
+/* Pre-joined assignment view with names instead of ids, for the moves list on the optimiser
+   page. RouteName/LoaderName/DestinationName are NULL for an unavailable or stood-down truck.
+   MoveReason is passed through but always NULL now (see the table comment above) - the API
+   doesn't select it. */
+CREATE VIEW dbo.vw_OptimisedAssignmentDetail AS
+SELECT
+    a.OptimisedAssignmentId,
+    p.PlanId, p.ShiftDate, p.ShiftName, p.PlanType,
+    t.Name AS TruckName,
+    r.Name AS RouteName,
+    l.Name AS LoaderName,
+    d.Name AS DestinationName,
+    a.IsStoodDown,
+    a.IsUnavailable,
+    a.MoveReason
+FROM dbo.OptimisedAssignments AS a
+JOIN dbo.OptimisedPlans AS p ON p.PlanId = a.PlanId
+JOIN dbo.Trucks         AS t ON t.TruckId = a.TruckId
+LEFT JOIN dbo.Routes       AS r ON r.RouteId       = a.RouteId
+LEFT JOIN dbo.Loaders      AS l ON l.LoaderId      = r.LoaderId
+LEFT JOIN dbo.Destinations AS d ON d.DestinationId = r.DestinationId;
+GO
+
+/* Pre-joined loader-stat view for the before/after loader table on the optimiser page. */
+CREATE VIEW dbo.vw_OptimisedLoaderStatDetail AS
+SELECT
+    ls.OptimisedLoaderStatId,
+    p.PlanId, p.ShiftDate, p.ShiftName, p.PlanType,
+    l.Name AS LoaderName,
+    ls.Trucks,
+    ls.AvgQueueMin,
+    ls.LoadingMin,
+    ls.Utilisation,
+    ls.MatchFactor
+FROM dbo.OptimisedLoaderStats AS ls
+JOIN dbo.OptimisedPlans AS p ON p.PlanId = ls.PlanId
+JOIN dbo.Loaders        AS l ON l.LoaderId = ls.LoaderId;
 GO

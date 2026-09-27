@@ -33,6 +33,11 @@ var resetSchemaOnly = args.Contains("--reset-schema");
 // Throwaway diagnostic for SimulationEngine.ReplayShift, not part of the normal CLI surface -
 // off unless explicitly passed. Value is a shift start timestamp, e.g. 2026-09-26T18:00:00.
 var replaySelfCheckShift = GetStringArg("--replay-selfcheck", null);
+var optimise = args.Contains("--optimise");
+// Testing/timing knob, not part of the documented CLI surface: caps how many of the complete
+// shifts --optimise processes (oldest first), so a timing check doesn't have to run the whole
+// history. Omitted (or left at its default) processes every complete shift, as documented.
+var optimiseLimit = GetIntArg("--optimise-limit", int.MaxValue);
 
 if (resetSchemaOnly)
 {
@@ -47,11 +52,17 @@ var fleet = Fleet.Create();
 // History uses a fixed seed so the data (and your README numbers) are repeatable.
 // Live mode uses a fresh random stream so it doesn't replay the same values.
 var rng = live ? new Random() : new Random(seed);
-var sim = new Simulator(fleet, rng);
+var sim = new Simulator(fleet);
 
 if (replaySelfCheckShift != null)
 {
     await RunReplaySelfCheckAsync(replaySelfCheckShift);
+    return 0;
+}
+
+if (optimise)
+{
+    await RunOptimiseAsync();
     return 0;
 }
 
@@ -299,7 +310,11 @@ async Task RunLiveAsync()
 /// through ReplayShift, and prints totals against what history mode actually produced for that
 /// shift (a few SQL queries, reported alongside this in the implementation notes). Then replays
 /// the same starting loader state a second time with every available truck reassigned onto one
-/// loader's route, to show queue time rising under overload. No DB writes.</summary>
+/// loader's route, to show queue time rising under overload. Finally runs two automated
+/// determinism checks for the per-truck/per-loader deterministic RNG scheme (SeededRandom):
+/// replaying the same plan twice gives byte-identical outcomes, and moving one truck to a
+/// different route leaves every OTHER truck's per-cycle payload draw sequence unchanged. No DB
+/// writes.</summary>
 async Task RunReplaySelfCheckAsync(string shiftStartArg)
 {
     var shiftStart = DateTime.Parse(shiftStartArg, System.Globalization.CultureInfo.InvariantCulture);
@@ -342,13 +357,25 @@ async Task RunReplaySelfCheckAsync(string shiftStartArg)
 
     Console.WriteLine($"Replay self-check: shift {shiftDate} {shiftName} ({shiftStart:u} - {shiftEnd:u}), {routeByTruckId.Count} trucks in Schedules.");
 
-    // Run 1: the shift's actual route assignment, starting from a fresh loader state.
-    var loaderPlannerBase = new LoaderPlanner(fleet.Loaders, new Random(1001), shiftStart);
+    // A single base LoaderPlanner, seeded deterministically from (seed, shiftStart) and planned
+    // for the whole shift up front, so every clone taken below - for every run - sees the exact
+    // same loader-side delays (handover, spikes) as fixed input; none of the replays below draw
+    // any further loader-side randomness (EnsurePlanned(upTo <= shiftEnd) is a no-op once this
+    // has run), so the same loader delays are shared across every run and plan variant, as the
+    // optimiser slice will require.
+    var loaderPlannerBase = new LoaderPlanner(fleet.Loaders, SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId), shiftStart);
     loaderPlannerBase.EnsurePlanned(shiftEnd);
-    var loaderPlanner1 = loaderPlannerBase;
-    var loaderPlanner2 = loaderPlannerBase.Clone(new Random(2002)); // independent copy for run 2, taken before run 1 mutates loaderPlannerBase
 
-    var events1 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlanner1, new Random(3003));
+    // Every run below gets its own clone, all taken from loaderPlannerBase before any of them
+    // mutates it (FreeAt state), so every run starts from an identical loader state.
+    var loaderPlanner1 = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+    var loaderPlanner2 = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+    var loaderPlannerDetA = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+    var loaderPlannerDetB = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+    var loaderPlannerMoveA = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+    var loaderPlannerMoveB = loaderPlannerBase.Clone(SimulationEngine.SeededRandom(seed, shiftStart, SimulationEngine.LoaderEntityId));
+
+    var events1 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlanner1, seed);
     var cycles1 = events1.OfType<CycleRow>().ToList();
     Console.WriteLine($"Run 1 (actual assignment): {cycles1.Count} cycles, {cycles1.Sum(c => c.PayloadTonnes):N1} t, avg queue {cycles1.Average(c => c.QueueMin):N2} min.");
 
@@ -356,10 +383,403 @@ async Task RunReplaySelfCheckAsync(string shiftStartArg)
     // home route), replayed from the SAME starting loader state via the clone above.
     var singleRouteId = fleet.Routes.First(r => r.LoaderId == 1).Id;
     var overloadedRouteByTruckId = routeByTruckId.ToDictionary(kv => kv.Key, kv => kv.Value == null ? (int?)null : singleRouteId);
-    var events2 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, overloadedRouteByTruckId, knownDelaysByTruckId, loaderPlanner2, new Random(4004));
+    var events2 = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, overloadedRouteByTruckId, knownDelaysByTruckId, loaderPlanner2, seed + 1);
     var cycles2 = events2.OfType<CycleRow>().ToList();
     Console.WriteLine($"Run 2 (all onto one loader): {cycles2.Count} cycles, {cycles2.Sum(c => c.PayloadTonnes):N1} t, avg queue {cycles2.Average(c => c.QueueMin):N2} min.");
+
+    // --- Determinism check 1: replaying the identical plan twice, same seed, gives an
+    // identical outcome (every cycle field, in order, for every truck). ---
+    var detEventsA = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlannerDetA, seed);
+    var detEventsB = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlannerDetB, seed);
+    var detCyclesA = detEventsA.OfType<CycleRow>().ToList();
+    var detCyclesB = detEventsB.OfType<CycleRow>().ToList();
+    var detIdentical = detCyclesA.Count == detCyclesB.Count &&
+        detCyclesA.Zip(detCyclesB, (a, b) => a == b).All(same => same);
+    Console.WriteLine($"Determinism check (replay same plan twice, seed {seed}): {detCyclesA.Count} vs {detCyclesB.Count} cycles, identical={detIdentical} -> {(detIdentical ? "PASS" : "FAIL")}");
+    if (!detIdentical)
+    {
+        var firstDiff = detCyclesA.Zip(detCyclesB, (a, b) => (a, b)).Select((p, i) => (p.a, p.b, i)).FirstOrDefault(p => p.a != p.b);
+        Console.WriteLine($"  first mismatch at index {firstDiff.i}: {firstDiff.a} vs {firstDiff.b}");
+    }
+
+    // --- Determinism check 2: moving ONE truck to a different route leaves every OTHER
+    // truck's per-cycle payload draw sequence unchanged (compared in order, not just totals). ---
+    var movedTruckId = routeByTruckId.First(kv => kv.Value != null).Key;
+    var movedFromRouteId = routeByTruckId[movedTruckId]!.Value;
+    var movedToRouteId = fleet.Routes.First(r => r.Id != movedFromRouteId).Id;
+    var moveRouteByTruckId = new Dictionary<int, int?>(routeByTruckId) { [movedTruckId] = movedToRouteId };
+
+    var moveEventsA = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, routeByTruckId, knownDelaysByTruckId, loaderPlannerMoveA, seed);
+    var moveEventsB = SimulationEngine.ReplayShift(fleet, sim, shiftStart, shiftEnd, moveRouteByTruckId, knownDelaysByTruckId, loaderPlannerMoveB, seed);
+    var moveCyclesA = moveEventsA.OfType<CycleRow>().ToList();
+    var moveCyclesB = moveEventsB.OfType<CycleRow>().ToList();
+
+    // Every OTHER truck's per-truck Random is untouched by the move (SeededRandom is keyed only
+    // by that truck's own id), so its Nth cycle must draw the exact same payload in both worlds.
+    // What CAN legitimately differ is how many cycles a truck completes in the 12-hour shift:
+    // moving truck 1 onto (or off) a loader changes queueing there for every truck sharing that
+    // loader, which changes how much of the shift each cycle consumes, so a truck sharing the
+    // moved truck's old or new loader may end up one cycle ahead or behind - not because its
+    // draws changed, but because it ran out of shift time at a different point. The real
+    // independence check is therefore prefix equality (every draw both runs actually made
+    // agrees, in order), not equal length.
+    var otherTruckIds = routeByTruckId.Keys.Where(id => id != movedTruckId).ToList();
+    var allOtherTrucksUnchanged = true;
+    foreach (var truckId in otherTruckIds)
+    {
+        var payloadsA = moveCyclesA.Where(c => c.TruckId == truckId).Select(c => c.PayloadTonnes).ToList();
+        var payloadsB = moveCyclesB.Where(c => c.TruckId == truckId).Select(c => c.PayloadTonnes).ToList();
+        var commonLength = Math.Min(payloadsA.Count, payloadsB.Count);
+        var prefixMatches = payloadsA.Take(commonLength).SequenceEqual(payloadsB.Take(commonLength));
+        if (!prefixMatches)
+        {
+            allOtherTrucksUnchanged = false;
+            Console.WriteLine($"  truck {truckId}: payload draw sequence DIVERGED (not just truncated) after moving truck {movedTruckId} (route {movedFromRouteId} -> {movedToRouteId}): [{string.Join(", ", payloadsA)}] vs [{string.Join(", ", payloadsB)}]");
+        }
+        else if (payloadsA.Count != payloadsB.Count)
+        {
+            Console.WriteLine($"  truck {truckId}: same {commonLength} draws in the common prefix, ran {payloadsA.Count} vs {payloadsB.Count} cycles this shift (expected - shared loader contention with the moved truck changes how many cycles fit in the shift, not the draws themselves).");
+        }
+    }
+    var movedPayloadsA = moveCyclesA.Where(c => c.TruckId == movedTruckId).Select(c => c.PayloadTonnes).ToList();
+    var movedPayloadsB = moveCyclesB.Where(c => c.TruckId == movedTruckId).Select(c => c.PayloadTonnes).ToList();
+    Console.WriteLine($"Determinism check (move truck {movedTruckId} from route {movedFromRouteId} to {movedToRouteId}): {otherTruckIds.Count} other trucks, every draw any of them actually made still agrees in order={allOtherTrucksUnchanged} -> {(allOtherTrucksUnchanged ? "PASS" : "FAIL")}");
+    Console.WriteLine($"  moved truck {movedTruckId}'s own payload sequence (expected to legitimately differ - different route, same rng consumption order): {movedPayloadsA.Count} vs {movedPayloadsB.Count} cycles.");
 }
+
+/// <summary>--optimise: reads every complete shift's Schedules/Delays/LoaderDelays from the
+/// database, runs local search (SimulationEngine.ReplayShift-judged, per OptimiserEngine) for
+/// "MoreOutput" and "Leaner" against the shift as scheduled ("Original"), and writes all three
+/// plans per shift into OptimisedPlans/OptimisedAssignments/OptimisedLoaderStats in one
+/// transaction that replaces whatever was there before. Pure in-memory computation happens
+/// before any transaction opens, so the transaction itself only has to hold locks for the
+/// (fast) write phase, not for however long the search takes.</summary>
+async Task RunOptimiseAsync()
+{
+    var overallStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+    await using var conn = new SqlConnection(connString);
+    await conn.OpenAsync();
+
+    if (!await TablesExistAsync(conn))
+    {
+        Console.Error.WriteLine("Tables are missing (or the new Optimised* tables don't exist yet). Run --reset-schema and a history load first.");
+        return;
+    }
+
+    var (shifts, tooEarly, tooLate) = await GetCompleteShiftsAsync(conn);
+    if (optimiseLimit < shifts.Count)
+        shifts = shifts.Take(optimiseLimit).ToList();
+    Console.WriteLine($"--optimise: {shifts.Count} complete shift(s) to process ({tooEarly} skipped as too early - before the data's first cycle, {tooLate} skipped as too late - after the data's as-of time).");
+
+    var results = new List<OptimiserEngine.ShiftResult>();
+    var shiftIndex = 0;
+    foreach (var shift in shifts)
+    {
+        shiftIndex++;
+        var (routeByTruckId, unavailableTruckIds) = await GetScheduleForShiftAsync(conn, shift);
+        if (routeByTruckId.Count == 0)
+        {
+            Console.WriteLine($"[{shiftIndex}/{shifts.Count}] {shift}: no Schedules rows, skipped.");
+            continue;
+        }
+
+        var knownDelays = await GetKnownDelaysForShiftAsync(conn, shift);
+        var existingLoaderDelays = await GetLoaderDelaysForShiftAsync(conn, shift);
+        var baseLoaderPlanner = LoaderPlanner.FromExisting(
+            fleet.Loaders, existingLoaderDelays, shift.End,
+            SimulationEngine.SeededRandom(seed, shift.Start, SimulationEngine.LoaderEntityId));
+
+        var availableTruckIds = fleet.Trucks
+            .Select(t => t.Id)
+            .Where(id => !unavailableTruckIds.Contains(id))
+            .ToHashSet();
+
+        var ctx = new ShiftContext
+        {
+            Shift = shift,
+            Fleet = fleet,
+            Sim = sim,
+            KnownDelaysByTruckId = knownDelays,
+            BaseLoaderPlanner = baseLoaderPlanner,
+            AvailableTruckIds = availableTruckIds
+        };
+
+        var result = OptimiserEngine.OptimiseShift(ctx, routeByTruckId, unavailableTruckIds);
+        results.Add(result);
+
+        var moreOutputGain = result.MoreOutput.Scalars.Mean.TotalTonnes - result.Original.Scalars.Mean.TotalTonnes;
+        var leanerHoursSaved = result.Original.Scalars.Mean.TruckHours - result.Leaner.Scalars.Mean.TruckHours;
+        Console.WriteLine($"[{shiftIndex}/{shifts.Count}] {shift}: MoreOutput +{moreOutputGain:0.0} t, Leaner -{leanerHoursSaved:0.0} truck-hours (stood down {result.Leaner.Scalars.Mean.TrucksStoodDown:0}).");
+    }
+
+    Console.WriteLine($"Search complete for {results.Count} shift(s) in {overallStopwatch.Elapsed.TotalSeconds:0.0}s. Writing results...");
+
+    await WriteOptimisedResultsAsync(conn, results);
+
+    overallStopwatch.Stop();
+    Console.WriteLine($"--optimise done: {results.Count} shifts optimised in {overallStopwatch.Elapsed.TotalSeconds:0.0}s total.");
+}
+
+/// <summary>The data's own as-of time (MAX(StartTime + TotalCycleMin) over every cycle) and its
+/// earliest cycle's start - the same "as-of, never the wall clock" rule the mine-time notes set
+/// for every other consumer of this data, and the same as-of formula GetMetaAsync uses on the API
+/// side (kept in sync deliberately, not reinvented here). Used to decide which shifts --optimise
+/// may touch: MineTime.Now was wrong for this, because it made "complete" depend on when the
+/// generator process happened to run rather than on how much data actually exists - a shift could
+/// look complete only because wall-clock time had passed, while the data itself still had nothing,
+/// or only a partial record, for it.</summary>
+async Task<(DateTime AsOf, DateTime FirstCycleStart)> GetDataBoundsAsync(SqlConnection conn)
+{
+    await using var cmd = new SqlCommand(@"
+        SELECT
+            MAX(DATEADD(SECOND, CAST(ROUND(TotalCycleMin * 60, 0) AS INT), StartTime)) AS AsOf,
+            MIN(StartTime) AS FirstCycleStart
+        FROM dbo.vw_CycleDetail;", conn);
+    await using var reader = await cmd.ExecuteReaderAsync();
+    await reader.ReadAsync();
+    return (reader.GetDateTime(0), reader.GetDateTime(1));
+}
+
+/// <summary>A shift is eligible for --optimise only if it is fully covered by data: it must start
+/// at or after the earliest cycle on record (excludes a shift whose window started before the
+/// loaded history did - a truck timeline starting mid-shift leaves that shift's actual record
+/// partial, not comparable to a replay of the full 12 hours) and end at or before the data's
+/// as-of time (excludes a shift that, by the data, hasn't finished yet - even if wall-clock time
+/// says otherwise). TooEarly/TooLate are counted independently over every shift with a Schedules
+/// row, so a shift that somehow failed both counts would double up in the reported totals - not
+/// possible in practice with a multi-day window and 12-hour shifts, so not specially guarded against.</summary>
+async Task<(List<ShiftKey> Shifts, int TooEarly, int TooLate)> GetCompleteShiftsAsync(SqlConnection conn)
+{
+    var shifts = new List<ShiftKey>();
+    await using (var cmd = new SqlCommand("SELECT DISTINCT ShiftDate, ShiftName FROM dbo.Schedules;", conn))
+    await using (var reader = await cmd.ExecuteReaderAsync())
+    {
+        while (await reader.ReadAsync())
+            shifts.Add(new ShiftKey(DateOnly.FromDateTime(reader.GetDateTime(0)), reader.GetString(1)));
+    }
+
+    var (asOf, firstCycleStart) = await GetDataBoundsAsync(conn);
+
+    var tooEarly = shifts.Count(s => s.Start < firstCycleStart);
+    var tooLate = shifts.Count(s => s.End > asOf);
+    var complete = shifts.Where(s => s.Start >= firstCycleStart && s.End <= asOf).OrderBy(s => s.Start).ToList();
+
+    return (complete, tooEarly, tooLate);
+}
+
+async Task<(Dictionary<int, int?> RouteByTruckId, HashSet<int> UnavailableTruckIds)> GetScheduleForShiftAsync(SqlConnection conn, ShiftKey shift)
+{
+    var routeByTruckId = new Dictionary<int, int?>();
+    var unavailable = new HashSet<int>();
+
+    await using var cmd = new SqlCommand(
+        "SELECT TruckId, RouteId, UnavailableReason FROM dbo.Schedules WHERE ShiftDate = @d AND ShiftName = @n;", conn);
+    cmd.Parameters.AddWithValue("@d", shift.ShiftDate.ToDateTime(TimeOnly.MinValue));
+    cmd.Parameters.AddWithValue("@n", shift.ShiftName);
+    await using var reader = await cmd.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        var truckId = reader.GetInt32(0);
+        var routeId = reader.IsDBNull(1) ? (int?)null : reader.GetInt32(1);
+        routeByTruckId[truckId] = routeId;
+        if (!reader.IsDBNull(2)) unavailable.Add(truckId);
+    }
+
+    return (routeByTruckId, unavailable);
+}
+
+/// <summary>Reads Delays overlapping the shift and clips any delay already in progress at shift
+/// start to its REMAINING duration from shift start - the slice-1 caveat: TruckTimeline always
+/// runs a popped delay for its full DurationMin from the cursor, so a delay whose real start was
+/// before the shift began would otherwise replay for its full original length starting at shift
+/// start, overstating how long it keeps the truck out of production during the replayed shift.</summary>
+async Task<Dictionary<int, List<PendingDelay>>> GetKnownDelaysForShiftAsync(SqlConnection conn, ShiftKey shift)
+{
+    var result = new Dictionary<int, List<PendingDelay>>();
+    await using var cmd = new SqlCommand(
+        "SELECT TruckId, StartTime, EndTime, Reason, IsPlanned FROM dbo.Delays WHERE StartTime < @e AND EndTime > @s;", conn);
+    cmd.Parameters.AddWithValue("@s", shift.Start);
+    cmd.Parameters.AddWithValue("@e", shift.End);
+    await using var reader = await cmd.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        var truckId = reader.GetInt32(0);
+        var start = reader.GetDateTime(1);
+        var end = reader.GetDateTime(2);
+        var reason = reader.GetString(3);
+        var isPlanned = reader.GetBoolean(4);
+
+        var effectiveStart = start < shift.Start ? shift.Start : start;
+        var remainingMin = (end - effectiveStart).TotalMinutes;
+        if (remainingMin <= 0) continue;
+
+        if (!result.TryGetValue(truckId, out var list))
+            result[truckId] = list = new List<PendingDelay>();
+        list.Add(new PendingDelay(effectiveStart, remainingMin, reason, isPlanned));
+    }
+
+    foreach (var truckId in fleet.Trucks.Select(t => t.Id))
+        if (!result.ContainsKey(truckId))
+            result[truckId] = new List<PendingDelay>();
+
+    return result;
+}
+
+async Task<List<LoaderDelayRow>> GetLoaderDelaysForShiftAsync(SqlConnection conn, ShiftKey shift)
+{
+    var result = new List<LoaderDelayRow>();
+    await using var cmd = new SqlCommand(
+        "SELECT LoaderId, StartTime, EndTime, Reason, IsPlanned, RateFactor FROM dbo.LoaderDelays WHERE StartTime < @e AND EndTime > @s;", conn);
+    cmd.Parameters.AddWithValue("@s", shift.Start);
+    cmd.Parameters.AddWithValue("@e", shift.End);
+    await using var reader = await cmd.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        result.Add(new LoaderDelayRow(
+            reader.GetInt32(0), reader.GetDateTime(1), reader.GetDateTime(2),
+            reader.GetString(3), reader.GetBoolean(4), (double)reader.GetDecimal(5)));
+    }
+    return result;
+}
+
+async Task WriteOptimisedResultsAsync(SqlConnection conn, List<OptimiserEngine.ShiftResult> results)
+{
+    await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
+    try
+    {
+        // TRUNCATE is refused on a table any FK still points at, even an empty referencing
+        // table - OptimisedPlans needs DELETE instead (see the same note in
+        // ResetAndSeedReferenceDataAsync).
+        await using (var cmd = new SqlCommand("TRUNCATE TABLE dbo.OptimisedAssignments;", conn, tx)) { cmd.CommandTimeout = 120; await cmd.ExecuteNonQueryAsync(); }
+        await using (var cmd = new SqlCommand("TRUNCATE TABLE dbo.OptimisedLoaderStats;", conn, tx)) { cmd.CommandTimeout = 120; await cmd.ExecuteNonQueryAsync(); }
+        await using (var cmd = new SqlCommand("DELETE FROM dbo.OptimisedPlans;", conn, tx)) { cmd.CommandTimeout = 120; await cmd.ExecuteNonQueryAsync(); }
+
+        var assignmentTable = NewAssignmentTable();
+        var loaderStatTable = NewLoaderStatTable();
+        var createdAt = MineTime.Now;
+
+        foreach (var result in results)
+        {
+            foreach (var plan in new[] { result.Original, result.MoreOutput, result.Leaner })
+            {
+                var planId = await InsertOnePlanAsync(conn, tx, result.Shift, plan, createdAt);
+
+                foreach (var a in plan.Assignments.Values.OrderBy(a => a.TruckId))
+                {
+                    // MoveReason is always written NULL now - the API builds that sentence at
+                    // read time (MoveReasonCalculator), not the generator, so a wording change
+                    // never needs a --optimise rerun. The column stays in the schema; it can be
+                    // dropped at the next schema change (see the project doc's schema-coupling notes).
+                    assignmentTable.Rows.Add(
+                        planId, a.TruckId, (object?)a.RouteId ?? DBNull.Value,
+                        a.IsStoodDown, a.IsUnavailable, DBNull.Value);
+                }
+
+                foreach (var l in plan.LoaderStats.OrderBy(l => l.LoaderId))
+                {
+                    loaderStatTable.Rows.Add(
+                        planId, l.LoaderId, l.Trucks,
+                        Math.Round((decimal)l.AvgQueueMin, 2), Math.Round((decimal)l.LoadingMin, 2),
+                        Math.Round((decimal)l.Utilisation, 4), Math.Round((decimal)l.MatchFactor, 3));
+                }
+            }
+        }
+
+        using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "dbo.OptimisedAssignments", BatchSize = 5000 })
+        {
+            foreach (DataColumn c in assignmentTable.Columns) bulk.ColumnMappings.Add(c.ColumnName, c.ColumnName);
+            await bulk.WriteToServerAsync(assignmentTable);
+        }
+        using (var bulk = new SqlBulkCopy(conn, SqlBulkCopyOptions.Default, tx) { DestinationTableName = "dbo.OptimisedLoaderStats", BatchSize = 5000 })
+        {
+            foreach (DataColumn c in loaderStatTable.Columns) bulk.ColumnMappings.Add(c.ColumnName, c.ColumnName);
+            await bulk.WriteToServerAsync(loaderStatTable);
+        }
+
+        await tx.CommitAsync();
+    }
+    catch
+    {
+        await tx.RollbackAsync();
+        throw;
+    }
+}
+
+DataTable NewAssignmentTable()
+{
+    var t = new DataTable();
+    t.Columns.Add("PlanId", typeof(int));
+    t.Columns.Add("TruckId", typeof(int));
+    t.Columns.Add("RouteId", typeof(int));
+    t.Columns.Add("IsStoodDown", typeof(bool));
+    t.Columns.Add("IsUnavailable", typeof(bool));
+    t.Columns.Add("MoveReason", typeof(string));
+    return t;
+}
+
+DataTable NewLoaderStatTable()
+{
+    var t = new DataTable();
+    t.Columns.Add("PlanId", typeof(int));
+    t.Columns.Add("LoaderId", typeof(int));
+    t.Columns.Add("Trucks", typeof(int));
+    t.Columns.Add("AvgQueueMin", typeof(decimal));
+    t.Columns.Add("LoadingMin", typeof(decimal));
+    t.Columns.Add("Utilisation", typeof(decimal));
+    t.Columns.Add("MatchFactor", typeof(decimal));
+    return t;
+}
+
+async Task<int> InsertOnePlanAsync(SqlConnection conn, SqlTransaction tx, ShiftKey shift, OptimisedPlan plan, DateTime createdAt)
+{
+    var s = plan.Scalars;
+    await using var cmd = new SqlCommand(@"
+        INSERT INTO dbo.OptimisedPlans
+            (ShiftDate, ShiftName, PlanType, SeedCount,
+             TotalTonnesMean, TotalTonnesMin, TotalTonnesMax,
+             CrusherTonnesMean, CrusherTonnesMin, CrusherTonnesMax,
+             RomTonnesMean, RomTonnesMin, RomTonnesMax,
+             WasteTonnesMean, WasteTonnesMin, WasteTonnesMax,
+             CyclesMean, CyclesMin, CyclesMax,
+             QueueHoursMean, QueueHoursMin, QueueHoursMax,
+             FuelLitresMean, FuelLitresMin, FuelLitresMax,
+             TruckHoursMean, TruckHoursMin, TruckHoursMax,
+             TrucksStoodDownMean, TrucksStoodDownMin, TrucksStoodDownMax,
+             CreatedAt)
+        OUTPUT INSERTED.PlanId
+        VALUES
+            (@shiftDate, @shiftName, @planType, @seedCount,
+             @totalMean, @totalMin, @totalMax,
+             @crusherMean, @crusherMin, @crusherMax,
+             @romMean, @romMin, @romMax,
+             @wasteMean, @wasteMin, @wasteMax,
+             @cyclesMean, @cyclesMin, @cyclesMax,
+             @queueMean, @queueMin, @queueMax,
+             @fuelMean, @fuelMin, @fuelMax,
+             @truckHoursMean, @truckHoursMin, @truckHoursMax,
+             @stoodDownMean, @stoodDownMin, @stoodDownMax,
+             @createdAt);", conn, tx);
+
+    cmd.Parameters.AddWithValue("@shiftDate", shift.ShiftDate.ToDateTime(TimeOnly.MinValue));
+    cmd.Parameters.AddWithValue("@shiftName", shift.ShiftName);
+    cmd.Parameters.AddWithValue("@planType", plan.PlanType);
+    cmd.Parameters.AddWithValue("@seedCount", OptimiserEngine.SeedCount);
+    cmd.Parameters.AddWithValue("@totalMean", Dec(s.Mean.TotalTonnes)); cmd.Parameters.AddWithValue("@totalMin", Dec(s.Min.TotalTonnes)); cmd.Parameters.AddWithValue("@totalMax", Dec(s.Max.TotalTonnes));
+    cmd.Parameters.AddWithValue("@crusherMean", Dec(s.Mean.CrusherTonnes)); cmd.Parameters.AddWithValue("@crusherMin", Dec(s.Min.CrusherTonnes)); cmd.Parameters.AddWithValue("@crusherMax", Dec(s.Max.CrusherTonnes));
+    cmd.Parameters.AddWithValue("@romMean", Dec(s.Mean.RomTonnes)); cmd.Parameters.AddWithValue("@romMin", Dec(s.Min.RomTonnes)); cmd.Parameters.AddWithValue("@romMax", Dec(s.Max.RomTonnes));
+    cmd.Parameters.AddWithValue("@wasteMean", Dec(s.Mean.WasteTonnes)); cmd.Parameters.AddWithValue("@wasteMin", Dec(s.Min.WasteTonnes)); cmd.Parameters.AddWithValue("@wasteMax", Dec(s.Max.WasteTonnes));
+    cmd.Parameters.AddWithValue("@cyclesMean", Dec(s.Mean.Cycles)); cmd.Parameters.AddWithValue("@cyclesMin", Dec(s.Min.Cycles)); cmd.Parameters.AddWithValue("@cyclesMax", Dec(s.Max.Cycles));
+    cmd.Parameters.AddWithValue("@queueMean", Dec(s.Mean.QueueHours)); cmd.Parameters.AddWithValue("@queueMin", Dec(s.Min.QueueHours)); cmd.Parameters.AddWithValue("@queueMax", Dec(s.Max.QueueHours));
+    cmd.Parameters.AddWithValue("@fuelMean", Dec(s.Mean.FuelLitres)); cmd.Parameters.AddWithValue("@fuelMin", Dec(s.Min.FuelLitres)); cmd.Parameters.AddWithValue("@fuelMax", Dec(s.Max.FuelLitres));
+    cmd.Parameters.AddWithValue("@truckHoursMean", Dec(s.Mean.TruckHours)); cmd.Parameters.AddWithValue("@truckHoursMin", Dec(s.Min.TruckHours)); cmd.Parameters.AddWithValue("@truckHoursMax", Dec(s.Max.TruckHours));
+    cmd.Parameters.AddWithValue("@stoodDownMean", Dec(s.Mean.TrucksStoodDown)); cmd.Parameters.AddWithValue("@stoodDownMin", Dec(s.Min.TrucksStoodDown)); cmd.Parameters.AddWithValue("@stoodDownMax", Dec(s.Max.TrucksStoodDown));
+    cmd.Parameters.AddWithValue("@createdAt", createdAt);
+
+    return (int)(await cmd.ExecuteScalarAsync())!;
+}
+
+decimal Dec(double v) => Math.Round((decimal)v, 3);
 
 // ---------------------------------------------------------------------------
 // Shift helpers
@@ -381,9 +801,9 @@ DateTime FloorToShiftBoundary(DateTime t)
 async Task<bool> TablesExistAsync(SqlConnection conn)
 {
     await using var cmd = new SqlCommand(
-        "SELECT COUNT(*) FROM sys.tables WHERE name IN ('Trucks','Loaders','Destinations','Routes','Cycles','Delays','Schedules','LoaderDelays');", conn);
+        "SELECT COUNT(*) FROM sys.tables WHERE name IN ('Trucks','Loaders','Destinations','Routes','Cycles','Delays','Schedules','LoaderDelays','OptimisedPlans','OptimisedAssignments','OptimisedLoaderStats');", conn);
     var count = (int)(await cmd.ExecuteScalarAsync())!;
-    return count == 8;
+    return count == 11;
 }
 
 async Task ResetSchemaAsync(SqlConnection conn)
@@ -431,6 +851,15 @@ async Task ResetAndSeedReferenceDataAsync(SqlConnection conn)
 {
     // Cycles/Delays/Schedules are not referenced by any other table, so TRUNCATE works
     // (and resets identities). Reference tables must be cleared in FK-dependency order.
+    // OptimisedAssignments/OptimisedLoaderStats reference OptimisedPlans, which in turn (like
+    // Schedules/Delays) is derived from Cycles/Delays/Schedules - a fresh data load makes any
+    // previous --optimise results stale, so they're cleared here too (children before parent).
+    // TRUNCATE is refused on a table any FK still points at, even if the referencing table is
+    // empty - OptimisedPlans is pointed at by OptimisedAssignments/OptimisedLoaderStats, so it
+    // needs DELETE instead (loses the identity reset, which doesn't matter for this table).
+    await ExecAsync(conn, "TRUNCATE TABLE dbo.OptimisedAssignments;");
+    await ExecAsync(conn, "TRUNCATE TABLE dbo.OptimisedLoaderStats;");
+    await ExecAsync(conn, "DELETE FROM dbo.OptimisedPlans;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.LoaderDelays;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.Delays;");
     await ExecAsync(conn, "TRUNCATE TABLE dbo.Cycles;");
@@ -1203,7 +1632,7 @@ class TruckTimeline
             }
 
             var route = _fleet.RouteById(schedule.RouteId.Value);
-            var row2 = _sim.BuildCycle(Truck, Cursor, route, _loaderPlanner);
+            var row2 = _sim.BuildCycle(Truck, Cursor, route, _loaderPlanner, _rng);
             Cursor = Cursor.AddMinutes(Simulator.TotalMin(row2));
             return row2;
         }
@@ -1225,12 +1654,15 @@ class TruckTimeline
 class Simulator
 {
     private readonly Fleet _fleet;
-    private readonly Random _rng;
 
-    public Simulator(Fleet fleet, Random rng)
+    // No Random field: every draw BuildCycle needs comes from the rng passed into that call,
+    // never from an instance-held stream. History and live mode pass the same shared rng every
+    // truck already uses (via TruckTimeline._rng), so their output is unchanged - see the
+    // deterministic-replay note on SimulationEngine.ReplayShift for why a replay instead gives
+    // each truck its own per-truck rng.
+    public Simulator(Fleet fleet)
     {
         _fleet = fleet;
-        _rng = rng;
     }
 
     public static double TotalMin(CycleRow r) =>
@@ -1240,21 +1672,24 @@ class Simulator
     /// time is no longer drawn independently - it falls out of genuine loader contention
     /// (see LoaderPlanner): a loader serves one truck at a time, FIFO by arrival, and stops
     /// or slows for the loader-side events LoaderPlanner has already planned (planted problems
-    /// #3 and #4 now live there, not here).</summary>
-    public CycleRow BuildCycle(Truck truck, DateTime start, Route route, LoaderPlanner loaderPlanner)
+    /// #3 and #4 now live there, not here).
+    ///
+    /// `rng` is the calling truck's own stream (TruckTimeline._rng), never a stream held by this
+    /// class - see the class comment.</summary>
+    public CycleRow BuildCycle(Truck truck, DateTime start, Route route, LoaderPlanner loaderPlanner, Random rng)
     {
         var loader = _fleet.LoaderById(route.LoaderId);
 
         // Payload is drawn BEFORE load/haul time, since both depend on it.
         // Planted problem #1: T07 runs ~80% of capacity instead of ~97%.
-        var share = truck.Underloaded ? Normal(0.80, 0.04) : Normal(0.97, 0.03);
+        var share = truck.Underloaded ? Normal(rng, 0.80, 0.04) : Normal(rng, 0.97, 0.03);
         var payload = Math.Clamp(share, 0.5, 1.05) * truck.CapacityTonnes;
 
         // Load time scales with payload share: a ~97% load averages ~3.8 min, ~80% ~3.1 min.
-        var baseLoad = Math.Max(2.0, Normal(3.8, 0.6));
+        var baseLoad = Math.Max(2.0, Normal(rng, 3.8, 0.6));
         var loadMinNominal = baseLoad * (payload / (0.97 * truck.CapacityTonnes));
 
-        var dumpMin = Math.Max(0.6, Normal(1.2, 0.3));
+        var dumpMin = Math.Max(0.6, Normal(rng, 1.2, 0.3));
 
         // Simple speed model: steeper grade = slower. Loaded trucks are slower than empty ones.
         var loadedSpeedKmh = SpeedModel.LoadedSpeedKmh(route.GradePercent);
@@ -1267,8 +1702,8 @@ class Simulator
         // speed model predicts (a slow ramp, code-only - not stored per-route in the DB).
         var slowFactor = route.DestinationId == Fleet.WasteDumpDestinationId ? 1.15 : 1.00;
 
-        var haulMin = route.DistanceKm / loadedSpeedKmh * 60 * slowFactor * grossWeightRatio * Math.Max(0.8, Normal(1, 0.06));
-        var returnMin = route.DistanceKm / emptySpeedKmh * 60 * Math.Max(0.8, Normal(1, 0.06));
+        var haulMin = route.DistanceKm / loadedSpeedKmh * 60 * slowFactor * grossWeightRatio * Math.Max(0.8, Normal(rng, 1, 0.06));
+        var returnMin = route.DistanceKm / emptySpeedKmh * 60 * Math.Max(0.8, Normal(rng, 1, 0.06));
 
         // Loader contention: the truck joins this loader's FIFO queue. loadStartRaw is the
         // instant the loader is actually free to serve it - the later of "when the truck
@@ -1279,7 +1714,7 @@ class Simulator
         // loader's FreeAt bookkeeping, which is what the overlap checks rely on).
         var loadStartRaw = start > loaderPlanner.FreeAt(loader.Id) ? start : loaderPlanner.FreeAt(loader.Id);
         loadStartRaw = loaderPlanner.SkipPastFullStops(loader.Id, loadStartRaw);
-        var positioning = 0.3 + _rng.NextDouble() * 0.4; // ~0.5 min average positioning at the loader
+        var positioning = 0.3 + rng.NextDouble() * 0.4; // ~0.5 min average positioning at the loader
         var loadStart = loadStartRaw.AddMinutes(positioning);
         var rate = loaderPlanner.RateFactorAt(loader.Id, loadStart); // 1.0 normally, 0.50 in a spike
         var loadMin = loadMinNominal / rate;
@@ -1298,10 +1733,10 @@ class Simulator
     }
 
     // Bell-curve random number (Box-Muller transform).
-    private double Normal(double mean, double sd)
+    private static double Normal(Random rng, double mean, double sd)
     {
-        var u1 = 1.0 - _rng.NextDouble();
-        var u2 = _rng.NextDouble();
+        var u1 = 1.0 - rng.NextDouble();
+        var u2 = rng.NextDouble();
         return mean + sd * Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
     }
 
