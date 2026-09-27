@@ -703,7 +703,7 @@ for the manual verification log). Findings:
 ## Deploying
 
 The hosted demo runs the React app on Vercel (Hobby), the API on Azure App
-Service F1 (Linux, no Always On) and the data on the Azure SQL free offer.
+Service F1 (Linux or Windows, no Always On) and the data on the Azure SQL free offer.
 The database holds a static 30-day, seed-42 snapshot loaded once from a
 developer machine, so its as-of time is the moment of the load. Live mode is
 not run in the cloud, because a process writing around the clock would keep
@@ -722,7 +722,7 @@ Run these in Git Bash from the repo root, signed in with `az login`.
 RG=haulcycle-rg
 LOC=australiaeast
 SQL=haulcycle-sql-<suffix>      # must be globally unique
-DB=HaulCycleInsights
+DB=HaulCycleInsights            # the portal names a free-offer database free-<name>-db; use the real name
 PLAN=haulcycle-plan
 APP=haulcycle-api               # the CI workflow and Vercel both use this name
 REPO=<owner>/<repo>
@@ -763,13 +763,12 @@ az sql db show -g $RG -s $SQL -n $DB \
 
 ### 3. Firewall
 
-"Allow Azure services" lets the API in; Entra-only auth still requires a
-valid identity. Your own IP gets a temporary rule for the load and the query
-editor.
+Public network access must be enabled (the portal defaults to Disabled), but
+with no "Allow Azure services" rule: step 5 adds one rule per API outbound IP
+instead. Your own IP gets a temporary rule for the load and the query editor.
 
 ```bash
-az sql server firewall-rule create -g $RG -s $SQL -n AllowAzureServices \
-  --start-ip-address 0.0.0.0 --end-ip-address 0.0.0.0
+az sql server update -g $RG -n $SQL --set publicNetworkAccess=Enabled
 
 MY_IP=$(curl -s https://api.ipify.org)
 az sql server firewall-rule create -g $RG -s $SQL -n TempMyIp \
@@ -795,13 +794,27 @@ paused database resumes, instead of failing the first request.
 ```bash
 az appservice plan create -g $RG -n $PLAN -l $LOC --is-linux --sku F1
 az webapp create -g $RG -p $PLAN -n $APP --runtime "DOTNETCORE:9.0"
+HOST=$(az webapp show -g $RG -n $APP --query defaultHostName -o tsv)   # new apps get a unique hostname, not $APP.azurewebsites.net
 az webapp update -g $RG -n $APP --https-only true
 az webapp identity assign -g $RG -n $APP
 
 az webapp config appsettings set -g $RG -n $APP --settings \
   "HAUL_API_DB_CONN=Server=tcp:$SQL.database.windows.net,1433;Database=$DB;Authentication=Active Directory Managed Identity;Encrypt=True;Connect Timeout=90;ConnectRetryCount=6;ConnectRetryInterval=10" \
   "HAUL_API_CORS_ORIGINS=https://<vercel-domain>"
+
+# Let only the API's outbound IPs through the SQL firewall. Rerun after a
+# change of pricing tier or region, which changes these IPs.
+i=0
+for ip in $(az webapp show -g $RG -n $APP --query possibleOutboundIpAddresses -o tsv | tr -d '\r' | tr ',' ' '); do
+  i=$((i+1))
+  az sql server firewall-rule create -g $RG -s $SQL -n "api-outbound-$i" \
+    --start-ip-address $ip --end-ip-address $ip -o none
+done
 ```
+
+The `identity assign` line matters: step 6 creates the database user for that
+identity, and without it `CREATE USER` fails with "Principal could not be
+found".
 
 ### 6. Database user for the API
 
@@ -838,14 +851,22 @@ gh variable set AZURE_SUBSCRIPTION_ID -R $REPO -b "$SUB_ID"
 These are repository variables, not secrets: they identify, they don't
 authenticate. `.github/workflows/ci.yml` skips the deploy job until
 `AZURE_CLIENT_ID` is set, then deploys the API on every push to `main` that
-touches `api/`, after the tests pass.
+touches `api/`, after the tests pass. **Run workflow** on the Actions tab
+deploys regardless of what changed. The health check in `ci.yml` uses the
+app's hostname, so update it if you recreate the app.
+
+If you set up deployment through the portal's **Deployment Center**
+instead, it creates a user-assigned identity with the federated credential
+and role, and commits its own workflow. Point the three variables at that
+identity's client ID and delete its workflow and `AZUREAPPSERVICE_*`
+secrets, so deploys keep going through the tested pipeline.
 
 ### 8. Vercel
 
 Import the repository in Vercel with **Root Directory** `web` and these
 Production environment variables:
 
-- `VITE_API_BASE_URL=https://haulcycle-api.azurewebsites.net`
+- `VITE_API_BASE_URL=https://<HOST from step 5>`
 - `VITE_HIDE_LIVE_TOGGLE=true`
 
 Put the resulting domain in `HAUL_API_CORS_ORIGINS` (step 5).
@@ -854,8 +875,8 @@ Put the resulting domain in `HAUL_API_CORS_ORIGINS` (step 5).
 ### Checks and teardown
 
 ```bash
-curl https://haulcycle-api.azurewebsites.net/health
-curl https://haulcycle-api.azurewebsites.net/api/meta   # may take a minute after idle
+curl https://$HOST/health
+curl https://$HOST/api/meta   # may take a minute after idle
 ```
 
 API docs are at `/scalar/v1`. `az group delete -n $RG` removes the Azure

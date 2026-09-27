@@ -3,6 +3,8 @@ name: CI
 on:
   push:
   pull_request:
+  # Manual runs from the Actions tab deploy the API regardless of what changed.
+  workflow_dispatch:
 
 jobs:
   build-test:
@@ -43,7 +45,7 @@ jobs:
   deploy-api:
     needs: build-test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && vars.AZURE_CLIENT_ID != ''
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.AZURE_CLIENT_ID != ''
     permissions:
       id-token: write
       contents: read
@@ -54,24 +56,29 @@ jobs:
 
       - name: Check for API changes
         id: filter
+        if: github.event_name == 'push'
         uses: dorny/paths-filter@v3
         with:
           filters: |
             api:
               - 'api/**'
 
+      - name: Decide whether to deploy
+        id: gate
+        run: echo "deploy=${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.api == 'true' }}" >> "$GITHUB_OUTPUT"
+
       - name: Set up .NET
-        if: steps.filter.outputs.api == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 9.0.x
 
       - name: Publish API
-        if: steps.filter.outputs.api == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         run: dotnet publish api/HaulCycle.Api -c Release -o publish
 
       - name: Azure login
-        if: steps.filter.outputs.api == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -79,16 +86,16 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Deploy to Azure App Service
-        if: steps.filter.outputs.api == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         uses: azure/webapps-deploy@v3
         with:
           app-name: haulcycle-api
           package: publish
 
       - name: Wait for the app to come up
-        if: steps.filter.outputs.api == 'true'
+        if: steps.gate.outputs.deploy == 'true'
         run: |
-          url="https://haulcycle-api.azurewebsites.net/health"
+          url="https://haulcycle-api-ame7cgexcthuehdk.australiaeast-01.azurewebsites.net/health"
           # F1 has a slow cold start after a deploy - retry with backoff rather than
           # failing on the first attempt.
           for attempt in $(seq 1 20); do
