@@ -150,12 +150,20 @@ export function ComplianceTable({ shifts, windowQuery }: ComplianceTableProps) {
                       {fmtInt(shift.actualCycles)} / {fmtInt(shift.plannedCycles)}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <Link
-                        to={`/optimiser?shiftDate=${shift.shiftDate}&shiftName=${shift.shiftName}`}
-                        className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-cyan-300"
-                      >
-                        Optimise this shift
-                      </Link>
+                      <div className="flex justify-end gap-2">
+                        <Link
+                          to={`/loaders?shiftDate=${shift.shiftDate}&shiftName=${shift.shiftName}`}
+                          className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-cyan-300"
+                        >
+                          Loader queues
+                        </Link>
+                        <Link
+                          to={`/optimiser?shiftDate=${shift.shiftDate}&shiftName=${shift.shiftName}`}
+                          className="rounded-md bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-cyan-300"
+                        >
+                          Optimise this shift
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                   {isExpanded && (

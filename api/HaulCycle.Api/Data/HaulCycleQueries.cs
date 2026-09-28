@@ -187,6 +187,43 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
         return rows.AsList();
     }
 
+    /// <summary>Cycles for one specific shift (ShiftDate + ShiftName match), for the
+    /// per-shift loader queue chart endpoint.</summary>
+    public async Task<IReadOnlyList<CycleRow>> GetCyclesForShiftAsync(DateOnly shiftDate, string shiftName, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT
+                StartTime, ShiftName, ShiftDate, TruckName, LoaderName, RouteName, DestinationName, Material,
+                LoadMin, HaulMin, DumpMin, ReturnMin, QueueMin, TotalCycleMin, PayloadTonnes, CapacityTonnes,
+                PayloadPercentOfCapacity, FuelLitres
+            FROM dbo.vw_CycleDetail
+            WHERE ShiftDate = @ShiftDate AND ShiftName = @ShiftName;
+            """;
+        var rows = await conn.QueryAsync<CycleRow>(new CommandDefinition(
+            sql,
+            new { ShiftDate = shiftDate.ToDateTime(TimeOnly.MinValue), ShiftName = shiftName },
+            cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>LoaderDelays for one specific shift (ShiftDate + ShiftName match), for the
+    /// per-shift loader queue chart endpoint.</summary>
+    public async Task<IReadOnlyList<LoaderDelayRow>> GetLoaderDelaysForShiftAsync(DateOnly shiftDate, string shiftName, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT LoaderName, StartTime, EndTime, RateFactor
+            FROM dbo.vw_LoaderDelayDetail
+            WHERE ShiftDate = @ShiftDate AND ShiftName = @ShiftName;
+            """;
+        var rows = await conn.QueryAsync<LoaderDelayRow>(new CommandDefinition(
+            sql,
+            new { ShiftDate = shiftDate.ToDateTime(TimeOnly.MinValue), ShiftName = shiftName },
+            cancellationToken: ct));
+        return rows.AsList();
+    }
+
     /// <summary>LoaderDelays (handovers and spikes) overlapping [from, to) - for the shortfall
     /// attribution queue split and /api/loaders' stopped-minutes figure.</summary>
     public async Task<IReadOnlyList<LoaderDelayRow>> GetLoaderDelaysAsync(DateTime from, DateTime to, CancellationToken ct = default)

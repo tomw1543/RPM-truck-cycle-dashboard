@@ -507,3 +507,29 @@ export interface LoadersData {
   shifts: LoaderShift[]
   summary: LoaderSummary[]
 }
+
+/** LoaderEndpoints.LoaderArrivalData - one truck's arrival at a loader during a shift. */
+export interface LoaderArrival {
+  truckName: string
+  arrivalTime: string  // ISO datetime (= cycle StartTime)
+  queueMin: number
+}
+
+/** LoaderEndpoints.LoaderDelayWindowData - one loader delay window during a shift. */
+export interface LoaderDelayWindow {
+  start: string   // ISO datetime
+  end: string
+  rateFactor: number  // 0.00 = handover (fully stopped), 0.50 = half-speed spike
+}
+
+/** LoaderEndpoints.LoaderQueueData - one loader's arrivals and delay windows for a shift. */
+export interface LoaderQueueData {
+  loaderName: string
+  arrivals: LoaderArrival[]
+  delays: LoaderDelayWindow[]
+}
+
+/** LoaderEndpoints.LoaderShiftQueueData - GET /api/loaders/shifts/{shiftDate}/{shiftName}. */
+export interface LoaderShiftQueueData {
+  loaders: LoaderQueueData[]
+}

@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, apiGet } from './client'
-import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, LoadersData, Meta, OptimiserShiftDetailData, OptimiserSummaryData, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
+import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, LoadersData, LoaderShiftQueueData, Meta, OptimiserShiftDetailData, OptimiserSummaryData, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
 
 /** Matches the server's 30s output-cache policy on /api/meta and /api/fleet/summary
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
@@ -111,6 +111,18 @@ export function useOptimiserSummary(params: TruckWindowParams, live: boolean) {
         shift: params.shift,
       }),
     refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+/** Disabled until both a shift date and name are provided. A 404 means no cycles were
+ * recorded for that shift. Same retry convention as useOptimiserShift. */
+export function useLoaderShiftQueue(shiftDate: string | undefined, shiftName: string | undefined, live: boolean) {
+  return useQuery({
+    queryKey: ['loaderShiftQueue', shiftDate, shiftName, live],
+    queryFn: () => apiGet<LoaderShiftQueueData>(`/api/loaders/shifts/${shiftDate}/${shiftName}`),
+    enabled: Boolean(shiftDate && shiftName),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+    retry: (failureCount, error) => !(error instanceof ApiError && error.status === 404) && failureCount < 3,
   })
 }
 

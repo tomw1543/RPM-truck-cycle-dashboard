@@ -3,6 +3,12 @@ using HaulCycle.Api.Kpi;
 
 namespace HaulCycle.Api.Endpoints;
 
+// Response types for GET /api/loaders/shifts/{shiftDate}/{shiftName}
+public sealed record LoaderArrivalData(string TruckName, DateTime ArrivalTime, decimal QueueMin);
+public sealed record LoaderDelayWindowData(DateTime Start, DateTime End, decimal RateFactor);
+public sealed record LoaderQueueData(string LoaderName, IReadOnlyList<LoaderArrivalData> Arrivals, IReadOnlyList<LoaderDelayWindowData> Delays);
+public sealed record LoaderShiftQueueData(IReadOnlyList<LoaderQueueData> Loaders);
+
 public sealed record LoaderShiftData(
     DateOnly ShiftDate,
     string ShiftName,
@@ -24,9 +30,73 @@ public sealed record LoadersData(IReadOnlyList<LoaderShiftData> Shifts, IReadOnl
 /// See LoaderShiftCalculator for the arithmetic (matches OptimisedLoaderStats' definitions).</summary>
 public static class LoaderEndpoints
 {
+    /// <summary>Groups cycles and loader delays by loader name into the per-shift queue chart
+    /// response. Extracted as a static method so it can be unit-tested without a WebApplication.</summary>
+    public static LoaderShiftQueueData BuildLoaderShiftQueueData(
+        IReadOnlyList<CycleRow> cycles,
+        IReadOnlyList<LoaderDelayRow> loaderDelays,
+        IReadOnlyList<string> loaderNames)
+    {
+        var loaders = loaderNames
+            .OrderBy(n => n)
+            .Select(loaderName =>
+            {
+                var arrivals = cycles
+                    .Where(c => c.LoaderName == loaderName)
+                    .OrderBy(c => c.StartTime)
+                    .Select(c => new LoaderArrivalData(c.TruckName, c.StartTime, c.QueueMin))
+                    .ToList();
+
+                var delays = loaderDelays
+                    .Where(d => d.LoaderName == loaderName)
+                    .OrderBy(d => d.StartTime)
+                    .Select(d => new LoaderDelayWindowData(d.StartTime, d.EndTime, d.RateFactor))
+                    .ToList();
+
+                return new LoaderQueueData(loaderName, arrivals, delays);
+            })
+            .ToList();
+
+        return new LoaderShiftQueueData(loaders);
+    }
+
     public static void MapLoaderEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/loaders").CacheOutput("DataEndpoints");
+
+        app.MapGet("/api/loaders/shifts/{shiftDate}/{shiftName}", async Task<IResult> (
+            string shiftDate,
+            string shiftName,
+            HaulCycleQueries queries,
+            CancellationToken ct) =>
+        {
+            if (!DateOnly.TryParse(shiftDate, out var date))
+                return TypedResults.Problem(
+                    title: "Invalid shift date",
+                    detail: "shiftDate must be a date in YYYY-MM-DD format.",
+                    statusCode: StatusCodes.Status400BadRequest);
+
+            if (shiftName != "Day" && shiftName != "Night")
+                return TypedResults.Problem(
+                    title: "Invalid shift name",
+                    detail: "shiftName must be Day or Night.",
+                    statusCode: StatusCodes.Status400BadRequest);
+
+            var cycles = await queries.GetCyclesForShiftAsync(date, shiftName, ct);
+            if (cycles.Count == 0)
+                return TypedResults.Problem(
+                    title: "Shift not found",
+                    detail: $"No cycles found for {shiftDate} {shiftName}.",
+                    statusCode: StatusCodes.Status404NotFound);
+
+            var loaderDelays = await queries.GetLoaderDelaysForShiftAsync(date, shiftName, ct);
+            var loaderNames = await queries.GetLoaderNamesAsync(ct);
+
+            var data = BuildLoaderShiftQueueData(cycles, loaderDelays, loaderNames);
+            return Results.Ok(data);
+        })
+        .WithName("GetLoaderShiftQueue")
+        .WithSummary("Per-arrival queue times and loader delay windows for one shift, for the loader queue chart.");
 
         group.MapGet("", async Task<IResult> (
             DateOnly? from,
