@@ -4,6 +4,7 @@ import { DestinationChart } from '../components/DestinationChart'
 import { KpiTile } from '../components/KpiTile'
 import { PhaseSplitBar } from '../components/PhaseSplitBar'
 import { RoutesTable } from '../components/RoutesTable'
+import { ShowMore } from '../components/ShowMore'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
 import { useWindowState } from '../components/useWindowState'
@@ -42,19 +43,24 @@ export function Overview({ live }: OverviewProps) {
           <StatusBanner kind="empty" title="No data in this window." detail="Try a different date range, or run the data generator." />
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
-              <KpiTile label="Cycles" value={fmtInt(fleetSummary.data.data.cycles)} />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               <KpiTile label="Tonnes" value={fmtTonnes(fleetSummary.data.data.tonnes)} />
               <KpiTile
                 label="t / operating hr"
                 value={fmtNumber(fleetSummary.data.data.tonnesPerOperatingHour)}
               />
-              <KpiTile label="Avg cycle" value={`${fmtNumber(fleetSummary.data.data.averageCycleMin)} min`} />
               <KpiTile label="Availability" value={fmtPercentFraction(fleetSummary.data.data.availability)} />
               <KpiTile label="Utilisation" value={fmtPercentFraction(fleetSummary.data.data.utilisation)} />
-              <KpiTile label="Match factor" value={fmtRatio(fleetSummary.data.data.matchFactor)} />
-              <KpiTile label="Idle %" value={fmtPercentFraction(fleetSummary.data.data.idlePercent, 1)} />
             </div>
+
+            <ShowMore label="Show 4 more KPIs">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <KpiTile label="Cycles" value={fmtInt(fleetSummary.data.data.cycles)} />
+                <KpiTile label="Avg cycle" value={`${fmtNumber(fleetSummary.data.data.averageCycleMin)} min`} />
+                <KpiTile label="Match factor" value={fmtRatio(fleetSummary.data.data.matchFactor)} />
+                <KpiTile label="Idle %" value={fmtPercentFraction(fleetSummary.data.data.idlePercent, 1)} />
+              </div>
+            </ShowMore>
 
             <DestinationChart
               planVsActual={fleetSummary.data.data.planVsActual}
@@ -62,12 +68,16 @@ export function Overview({ live }: OverviewProps) {
               to={fleetSummary.data.to}
             />
 
-            <PhaseSplitBar
-              phaseSplit={fleetSummary.data.data.phaseSplit}
-              averageCycleMin={fleetSummary.data.data.averageCycleMin}
-            />
+            <ShowMore label="Show phase split">
+              <PhaseSplitBar
+                phaseSplit={fleetSummary.data.data.phaseSplit}
+                averageCycleMin={fleetSummary.data.data.averageCycleMin}
+              />
+            </ShowMore>
 
-            {routes.data && <RoutesTable routes={routes.data.data.routes} />}
+            <ShowMore label="Show routes table">
+              {routes.data && <RoutesTable routes={routes.data.data.routes} />}
+            </ShowMore>
           </>
         )
       )}

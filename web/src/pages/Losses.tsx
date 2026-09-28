@@ -2,6 +2,7 @@ import { useMeta, useBottlenecks } from '../api/hooks'
 import { ApiError } from '../api/client'
 import { BiggestLossesTable } from '../components/BiggestLossesTable'
 import { OverTargetTable } from '../components/OverTargetTable'
+import { ShowMore } from '../components/ShowMore'
 import { StatusBanner } from '../components/StatusBanner'
 import { UnderloadTable } from '../components/UnderloadTable'
 import { WindowBar } from '../components/WindowBar'
@@ -45,7 +46,9 @@ export function Losses({ live }: LossesProps) {
           <>
             <BiggestLossesTable items={bottlenecks.data.data.biggestLosses} windowQuery={windowQuery} />
             <OverTargetTable data={bottlenecks.data.data.overTarget} />
-            <UnderloadTable data={bottlenecks.data.data.underload} windowQuery={windowQuery} />
+            <ShowMore label="Show underload detail">
+              <UnderloadTable data={bottlenecks.data.data.underload} windowQuery={windowQuery} />
+            </ShowMore>
           </>
         ))}
     </div>

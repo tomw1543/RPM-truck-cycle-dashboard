@@ -4,6 +4,7 @@ import { useTruckDetail } from '../api/hooks'
 import { DelayReasonChart } from '../components/DelayReasonChart'
 import { KpiTile } from '../components/KpiTile'
 import { PhaseSplitBar } from '../components/PhaseSplitBar'
+import { ShowMore } from '../components/ShowMore'
 import { ShiftTonnesChart } from '../components/ShiftTonnesChart'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
@@ -44,12 +45,7 @@ export function TruckDetail({ live }: TruckDetailProps) {
           <>
             <h2 className="text-lg font-semibold text-slate-100">{detail.data.data.truck.name}</h2>
 
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8">
-              <KpiTile
-                label="Cycles"
-                value={fmtInt(detail.data.data.truck.cycles)}
-                sublabel={`Fleet ${fmtInt(detail.data.data.fleet.cycles)}`}
-              />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               <KpiTile
                 label="Tonnes"
                 value={fmtTonnes(detail.data.data.truck.tonnes)}
@@ -61,37 +57,51 @@ export function TruckDetail({ live }: TruckDetailProps) {
                 sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.tonnesPerOperatingHour)}`}
               />
               <KpiTile
-                label="Avg cycle"
-                value={`${fmtNumber(detail.data.data.truck.averageCycleMin)} min`}
-                sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.averageCycleMin)} min`}
-              />
-              <KpiTile
                 label="Avg payload %"
                 value={fmtNumber(detail.data.data.truck.averagePayloadPercent, 0)}
                 sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.averagePayloadPercent, 0)}`}
-              />
-              <KpiTile
-                label="Cycles / op hr"
-                value={fmtNumber(detail.data.data.truck.cyclesPerOperatingHour, 2)}
-                sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.cyclesPerOperatingHour, 2)}`}
               />
               <KpiTile
                 label="Availability"
                 value={fmtPercentFraction(detail.data.data.truck.availability)}
                 sublabel={`Fleet ${fmtPercentFraction(detail.data.data.fleet.availability)}`}
               />
-              <KpiTile
-                label="Utilisation"
-                value={fmtPercentFraction(detail.data.data.truck.utilisation)}
-                sublabel={`Fleet ${fmtPercentFraction(detail.data.data.fleet.utilisation)}`}
-              />
             </div>
+
+            <ShowMore label="Show 4 more KPIs">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <KpiTile
+                  label="Cycles"
+                  value={fmtInt(detail.data.data.truck.cycles)}
+                  sublabel={`Fleet ${fmtInt(detail.data.data.fleet.cycles)}`}
+                />
+                <KpiTile
+                  label="Avg cycle"
+                  value={`${fmtNumber(detail.data.data.truck.averageCycleMin)} min`}
+                  sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.averageCycleMin)} min`}
+                />
+                <KpiTile
+                  label="Cycles / op hr"
+                  value={fmtNumber(detail.data.data.truck.cyclesPerOperatingHour, 2)}
+                  sublabel={`Fleet ${fmtNumber(detail.data.data.fleet.cyclesPerOperatingHour, 2)}`}
+                />
+                <KpiTile
+                  label="Utilisation"
+                  value={fmtPercentFraction(detail.data.data.truck.utilisation)}
+                  sublabel={`Fleet ${fmtPercentFraction(detail.data.data.fleet.utilisation)}`}
+                />
+              </div>
+            </ShowMore>
 
             <ShiftTonnesChart shifts={detail.data.data.shifts} />
 
-            <DelayReasonChart delaysByReason={detail.data.data.delaysByReason} />
+            <ShowMore label="Show delay breakdown">
+              <DelayReasonChart delaysByReason={detail.data.data.delaysByReason} />
+            </ShowMore>
 
-            <PhaseSplitBar phaseSplit={detail.data.data.phaseSplit} averageCycleMin={detail.data.data.truck.averageCycleMin} />
+            <ShowMore label="Show phase split">
+              <PhaseSplitBar phaseSplit={detail.data.data.phaseSplit} averageCycleMin={detail.data.data.truck.averageCycleMin} />
+            </ShowMore>
           </>
         ))}
     </div>

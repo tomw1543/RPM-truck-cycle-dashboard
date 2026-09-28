@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 import { ApiError } from '../api/client'
 import { useMeta, useOptimiserShift, useOptimiserSummary } from '../api/hooks'
 import type { OptimiserPlan, OptimiserPlanType } from '../api/types'
+import { KpiTile } from '../components/KpiTile'
 import { OptimiserActualComparison } from '../components/OptimiserActualComparison'
 import { OptimiserHeadlineTiles } from '../components/OptimiserHeadlineTiles'
 import { OptimiserLoaderComparisonTable } from '../components/OptimiserLoaderComparisonTable'
@@ -10,9 +11,11 @@ import { OptimiserMovesList } from '../components/OptimiserMovesList'
 import { OptimiserOutcomeComparison } from '../components/OptimiserOutcomeComparison'
 import { OptimiserPlanSelector } from '../components/OptimiserPlanSelector'
 import { OptimiserShiftPicker } from '../components/OptimiserShiftPicker'
+import { ShowMore } from '../components/ShowMore'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
 import { useWindowState } from '../components/useWindowState'
+import { fmtSignedHours, fmtSignedLitres, fmtSignedTonnes, fmtTonnes } from '../lib/format'
 
 interface OptimiserProps {
   live: boolean
@@ -84,8 +87,7 @@ export function Optimiser({ live }: OptimiserProps) {
       <WindowBar state={windowState} onChange={setWindowState} bounds={bounds} />
 
       <p className="text-xs text-slate-500">
-        Every shift here has already been optimised offline by <code>--optimise</code>: local search over single-truck
-        moves and swaps, judged by replaying each candidate plan, never guessed. This page only reads the results back.
+        Shifts optimised offline via local search; this page reads the results.
       </p>
 
       {summary.isLoading && <StatusBanner kind="loading" title="Loading optimiser summary…" />}
@@ -103,12 +105,30 @@ export function Optimiser({ live }: OptimiserProps) {
           <StatusBanner kind="empty" title="No data in this window." detail="Try a different date range, or run the data generator." />
         ) : (
           <>
-            <OptimiserHeadlineTiles
-              shiftsOptimised={summary.data.data.shiftsOptimised}
-              shiftsNotOptimised={summary.data.data.shiftsNotOptimised}
-              moreOutput={summary.data.data.moreOutput}
-              leaner={summary.data.data.leaner}
-            />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <KpiTile
+                label="Tonnes gained (more output)"
+                value={fmtSignedTonnes(summary.data.data.moreOutput.tonnesGainedMean)}
+                sublabel={`range ${fmtTonnes(summary.data.data.moreOutput.tonnesGainedMin)} to ${fmtTonnes(summary.data.data.moreOutput.tonnesGainedMax)}`}
+              />
+              <KpiTile
+                label="Truck-hours saved (leaner)"
+                value={fmtSignedHours(summary.data.data.leaner.truckHoursSaved)}
+              />
+              <KpiTile
+                label="Fuel saved (leaner)"
+                value={fmtSignedLitres(summary.data.data.leaner.fuelLitresSaved)}
+              />
+            </div>
+
+            <ShowMore label="Show all plan metrics">
+              <OptimiserHeadlineTiles
+                shiftsOptimised={summary.data.data.shiftsOptimised}
+                shiftsNotOptimised={summary.data.data.shiftsNotOptimised}
+                moreOutput={summary.data.data.moreOutput}
+                leaner={summary.data.data.leaner}
+              />
+            </ShowMore>
 
             <OptimiserShiftPicker
               shifts={summary.data.data.shifts}
@@ -148,27 +168,31 @@ export function Optimiser({ live }: OptimiserProps) {
                     </p>
                   )}
 
-                  <OptimiserMovesList
-                    planLabel={PLAN_LABELS[planType]}
-                    assignments={planFor(planType, shiftDetail.data.data).assignments}
-                  />
-
-                  <OptimiserLoaderComparisonTable
-                    planLabel={PLAN_LABELS[planType]}
-                    original={shiftDetail.data.data.original.loaderStats}
-                    chosen={planFor(planType, shiftDetail.data.data).loaderStats}
-                  />
-
                   <OptimiserOutcomeComparison
                     planLabel={PLAN_LABELS[planType]}
                     original={shiftDetail.data.data.original.outcome}
                     chosen={planFor(planType, shiftDetail.data.data).outcome}
                   />
 
-                  <OptimiserActualComparison
-                    actual={shiftDetail.data.data.actual}
-                    replayedOriginal={shiftDetail.data.data.original.outcome}
-                  />
+                  <ShowMore label="Show moves and loader detail">
+                    <OptimiserMovesList
+                      planLabel={PLAN_LABELS[planType]}
+                      assignments={planFor(planType, shiftDetail.data.data).assignments}
+                    />
+
+                    <OptimiserLoaderComparisonTable
+                      planLabel={PLAN_LABELS[planType]}
+                      original={shiftDetail.data.data.original.loaderStats}
+                      chosen={planFor(planType, shiftDetail.data.data).loaderStats}
+                    />
+                  </ShowMore>
+
+                  <ShowMore label="Show actual vs replayed">
+                    <OptimiserActualComparison
+                      actual={shiftDetail.data.data.actual}
+                      replayedOriginal={shiftDetail.data.data.original.outcome}
+                    />
+                  </ShowMore>
                 </>
               )
             )}

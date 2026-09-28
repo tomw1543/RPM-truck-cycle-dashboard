@@ -3,6 +3,7 @@ import { ApiError } from '../api/client'
 import { ComplianceSummaryTiles } from '../components/ComplianceSummaryTiles'
 import { ComplianceTable } from '../components/ComplianceTable'
 import { ScheduleChart } from '../components/ScheduleChart'
+import { ShowMore } from '../components/ShowMore'
 import { ShortfallWaterfall } from '../components/ShortfallWaterfall'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
@@ -60,7 +61,9 @@ export function Schedule({ live }: ScheduleProps) {
                 buckets={compliance.data.data.summary.shortfall.buckets}
               />
             )}
-            <ComplianceTable shifts={compliance.data.data.shifts} windowQuery={windowQuery} />
+            <ShowMore label="Show shift table">
+              <ComplianceTable shifts={compliance.data.data.shifts} windowQuery={windowQuery} />
+            </ShowMore>
           </>
         ))}
     </div>
