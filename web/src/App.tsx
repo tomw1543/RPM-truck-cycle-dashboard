@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router'
 import { useMeta } from './api/hooks'
 import { FullPageLoading } from './components/FullPageLoading'
 import { Header } from './components/Header'
+import { Loaders } from './pages/Loaders'
 import { Losses } from './pages/Losses'
 import { Optimiser } from './pages/Optimiser'
 import { Overview } from './pages/Overview'
@@ -30,6 +31,7 @@ function App() {
         <Route path="/trucks/:name" element={<TruckDetail live={live} />} />
         <Route path="/losses" element={<Losses live={live} />} />
         <Route path="/schedule" element={<Schedule live={live} />} />
+        <Route path="/loaders" element={<Loaders live={live} />} />
         <Route path="/optimiser" element={<Optimiser live={live} />} />
       </Routes>
     </div>

@@ -1,11 +1,11 @@
 namespace HaulCycle.Api.Kpi;
 
 /// <summary>Shared phase-attribution rule (see CONTEXT.md's Phase attribution) used by both
-/// recoverable minutes (reference = route P25 benchmark) and minutes over book (reference =
-/// route book time). Given a cycle's gap G (its total minus some reference total, floored at
+/// recoverable minutes (reference = route P25 benchmark) and minutes over target (reference =
+/// route target time). Given a cycle's gap G (its total minus some reference total, floored at
 /// zero) and each phase's own excess over its own reference (floored at zero), the gap is split
 /// across phases in proportion to those excesses. When every phase excess is zero (possible,
-/// since percentiles/book totals don't add across phases) the whole gap goes to Unattributed.
+/// since percentiles/target totals don't add across phases) the whole gap goes to Unattributed.
 /// Shares + Unattributed always sum to exactly G: everything here is exact decimal arithmetic,
 /// with no rounding until a caller formats a value for display.</summary>
 public static class PhaseAttributionCalculator

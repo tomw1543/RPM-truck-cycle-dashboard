@@ -227,30 +227,28 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
   `/api/fleet/summary`. `data.routes` is one row per route (all 9, including
   a route with zero cycles in the window): `routeName`, `loaderName`,
   `destinationName`, `material`, `distanceKm`, `gradePercent`,
-  `bookCycleMin`, `cycles`, `tonnes`, `averageCycleMin`, `vsBook`
-  (`averageCycleMin / bookCycleMin - 1`, null with no cycles in the window),
+  `targetCycleMin`, `cycles`, `tonnes`, `averageCycleMin`, `vsTarget`
+  (`averageCycleMin / targetCycleMin - 1`, null with no cycles in the window),
   `benchmarkCycleMin` (the route's all-time 25th-percentile total cycle
   time — from `RouteBenchmarkCalculator`, computed over every cycle ever
   recorded, never the requested window, so it doesn't shift when the window
   does), and `phases` — for each of queue/load/haul/dump/return, `{
-  averageMin, benchmarkMin, bookMin }` (window average alongside the same
-  all-time 25th-percentile benchmark and the route's book time for that phase).
+  averageMin, benchmarkMin, targetMin }` (window average alongside the same
+  all-time 25th-percentile benchmark and the route's target time for that phase).
 - **`GET /api/bottlenecks`**: same `from`/`to`/`shift` params. Losses for
   cycles in the window, against benchmarks computed over all data:
   - `recoverable`: recoverable minutes (see below), `totalMin`,
     `totalEquivalentTonnes`, `byPhase` (including `unattributed`), `byRoute`,
     `byTruck`, `byLoader`.
-  - `overBook`: minutes over book, `totalMin`, `totalEquivalentTonnes`,
+  - `overTarget`: minutes over target, `totalMin`, `totalEquivalentTonnes`,
     `byPhase`, and `byRoute` with each route's phase split.
   - `underload`: `totalTonnes`, `byTruck` (cycles, underload tonnes,
     average payload %) and `baselinePayloadPercent` (the all-data median
     payload % used as the baseline fill).
   - `biggestLosses`: the top 10 items by equivalent tonnes, drawn from
-    recoverable minutes by route and phase, minutes over book by route and
-    phase, and underload by truck. Each item has `measure`, `subject`,
-    `phase`, `nativeAmount`, `nativeUnit` and `equivalentTonnes`.
-  - `hotspots`: `top` (the 10 loader date-hours with the most excess queue
-    minutes) and `profile` (excess queue minutes by loader and hour of day).
+    minutes over target by route and phase and underload by truck. Each item
+    has `measure`, `subject`, `phase`, `nativeAmount`, `nativeUnit` and
+    `equivalentTonnes`.
 - **`GET /api/optimiser/summary`**: same `from`/`to`/`shift` params,
   output-cached like the other data endpoints. `data` is the whole-window
   headline for each candidate plan type (`moreOutput`, `leaner`) against
@@ -285,6 +283,30 @@ cycle: `MAX(StartTime + TotalCycleMin)`), never the wall clock.
   (same rule with a 10-point margin, because a single truck varies more than
   the whole shift). An available truck with zero cycles still appears, with zeros; an
   unavailable truck has null plan fields and is never `belowTypical`.
+
+  Every truck-shift with a plan also carries `shortfall`, a decomposition of
+  its `plannedTonnes - actualTonnes` gap into signed tonne buckets:
+  `payloadShort`, `unplannedDowntime`, `queueLoaderDelay`, `queueOverTrucking`,
+  `haulOverTarget`, `otherOverTarget` (load/dump/return over target combined)
+  and `residual` (idle/unexplained). The buckets sum exactly (to rounding) to
+  the gap. A negative bucket means that truck-shift *gained* tonnes there (say,
+  a truck loading faster than target) - buckets are never floored to zero. `null`
+  for an unavailable truck (no plan). Shifts and the window summary carry the
+  same shape, summed over their planned truck-shifts (complete shifts only for
+  the window summary). See "Glossary" for what each bucket means and the
+  overlap-rule caveat on the queue split.
+- **`GET /api/loaders`**: same `from`/`to`/`shift` params, on the same
+  shift-grained basis. `data.shifts` is one row per loader per shift, newest
+  first: `shiftDate`, `shiftName`, `isComplete`, `loaderName`, `trucks` (from
+  that shift's `Schedules`), `avgQueueMin`, `loadingMin` (sum of `LoadMin`,
+  not an average), `stoppedMin` (handover-only `LoaderDelays` minutes clipped
+  to the shift), `utilisation` (`loadingMin / (720 - stoppedMin)`), and
+  `matchFactor` (`trucks x average LoadMin / average TotalCycleMin` at that
+  loader that shift, `0` with no cycles) - the same definitions
+  `OptimisedLoaderStats` uses, so this endpoint and the optimiser's before/
+  after loader table agree. `data.summary` is one row per loader, averaging
+  `avgUtilisation`/`avgQueueMin`/`avgMatchFactor` over complete shifts in the
+  window.
 
 ### KPI formulas
 
@@ -347,12 +369,12 @@ them separately and never add them together.
   Catches queue spikes, shift-change peaks and slow individual cycles. It
   can't see slowness that affects every cycle on a route, because that
   slowness is part of the route's P25.
-- **Minutes over book**: for each cycle, total time minus its route's book
+- **Minutes over target**: for each cycle, total time minus its route's target
   cycle time, floored at zero. Catches whole-route slowness such as the
   waste dump ramp.
 - **Phase attribution** (both minute measures): the cycle's gap is shared
   across phases in proportion to how far each phase ran over its own
-  reference (the phase P25, or the phase book time). Phases under their
+  reference (the phase P25, or the phase target time). Phases under their
   reference get nothing. If no phase is over, the gap goes to
   `unattributed`. Phase shares always sum to the total.
 - **Underload tonnes**: the baseline fill is the median payload % of
@@ -386,23 +408,31 @@ window (date range + shift), not just the KPIs, lives in the URL's query
 string, so a link to the overview page carries its filters with it. The
 first slice covers the fleet overview screen (`/`) against
 `/api/fleet/summary`, with a routes table below it (against `/api/routes`,
-sorted worst-first by `vsBook`, rows more than 10% over book highlighted).
+sorted worst-first by `vsTarget`, rows more than 10% over target highlighted).
 The trucks slice adds a sortable roster table (`/trucks`,
 against `/api/trucks`, fleet-average row pinned at the top, cells more than
 10% worse than fleet highlighted) and a per-truck detail page (`/trucks/:name`,
 against `/api/trucks/{name}`: KPI tiles against the fleet average, planned vs
 actual tonnes per shift, delay minutes by reason, phase split). The losses
 page (`/losses`, against `/api/bottlenecks`) shows the biggest losses ranked
-by equivalent tonnes, then recoverable minutes, minutes over book, underload
-by truck, and queue hotspots as a list and a loader x hour heatmap. The
-heatmap prints the value in each cell and has a screen-reader table beside
-it, and highlighted table cells carry a ▲ marker as well as colour. The
+by equivalent tonnes, then recoverable minutes, minutes over target by route
+with a fleet-level phase bar and expandable per-phase breakdown, and underload
+by truck. Highlighted table cells carry a ▲ marker as well as colour. The
 schedule page (`/schedule`, against `/api/schedule/compliance`) shows
 summary tiles (totals, percent of plan, best/worst shift), a planned-vs-actual
-tonnes chart per shift, and a shift table (newest first, expandable to a
-per-truck breakdown) with below-typical shifts and truck-shifts marked the
-same way; each row also has an "Optimise this shift" link into the optimiser
-page below. The optimiser page (`/optimiser`, against `/api/optimiser/summary`
+tonnes chart per shift, a window-level shortfall attribution chart (a
+horizontal bar per bucket - payload short, unplanned downtime, queue split
+into loader-delay and over-trucking, haul over target, load/dump/return over
+target, idle/unexplained - summing to the window's gap, with a bucket that
+*gained* tonnes shown as a negative bar labelled "gained" rather than by
+colour alone), and a shift table (newest first, expandable to a per-truck
+breakdown, each row's and each truck's bucket breakdown available as a hover
+tooltip) with below-typical shifts and truck-shifts marked the same way; each
+row also has an "Optimise this shift" link into the optimiser page below. The
+loaders page (`/loaders`, against `/api/loaders`) shows a queue-vs-utilisation
+scatter (one series per loader, top right meaning over-trucked - high queue
+at high utilisation) and a loader-shift table (trucks, match factor, average
+queue, utilisation, stopped minutes). The optimiser page (`/optimiser`, against `/api/optimiser/summary`
 and `/api/optimiser/shifts/{shiftDate}/{shiftName}`) is the only page whose
 window defaults to the whole `--optimise`d period instead of the site-wide
 rolling 7 days, since the headline is only meaningful over the period
@@ -424,9 +454,10 @@ the dev proxy.
 - **Destinations**: the three dump points (ROM pad and Crusher are Ore, Waste
   dump is Waste).
 - **Routes**: every loader x destination pair (9), each with its own distance,
-  grade and book times: `BookQueueMin`, `BookLoadMin`, `BookHaulMin`,
-  `BookDumpMin`, `BookReturnMin` and `BookCycleMin` (the sum of the five).
-  Book times assume full payload, no slow ramp and no noise. They come from
+  grade and target times: `BookQueueMin`, `BookLoadMin`, `BookHaulMin`,
+  `BookDumpMin`, `BookReturnMin` and `BookCycleMin` (the sum of the five;
+  DB column names, aliased to `targetCycleMin` etc. by the API).
+  Target times assume full payload, no slow ramp and no noise. They come from
   `Scheduler.BookCyclePhases`, which also builds `Schedules`.
 - **Cycles**: one row per completed load -> haul -> dump -> return loop, with
   the truck's route and loader for that cycle. `QueueMin` is no longer an
@@ -478,10 +509,10 @@ distance and grade. Every loader-destination pair is a route.
 
 **Schedule**: One truck's assignment to a loader and route for one shift,
 with planned cycles and tonnes, or a reason the truck is unavailable. Made
-before the shift from textbook rates and never changed during it.
+before the shift from target rates and never changed during it.
 
-**Book rate**: The textbook cycle time or tonnes per hour for a route,
-assuming full payload and no known problems. Schedules are built from book
+**Target rate**: The textbook cycle time or tonnes per hour for a route,
+assuming full payload and no known problems. Schedules are built from target
 rates.
 
 ### Time
@@ -524,19 +555,55 @@ truck-shift, or a whole window. Null wherever there's no plan to divide by.
 
 **Baseline**: The tonnes-weighted percent of plan across complete shifts in
 the window. It equals plan vs actual's overall `percentOfPlan` and sits
-around 85%, because schedules are built from book rates that real cycles
+around 85%, because schedules are built from target rates that real cycles
 rarely match.
 
 **Below typical**: A shift or truck-shift whose percent of plan falls more
 than a margin under the window's baseline (5 points for a shift, 10 points
 for a truck-shift). Only ever true on a complete shift.
 
+**Shortfall attribution**: The exact decomposition of a truck-shift's
+`plannedTonnes - actualTonnes` gap into signed tonne buckets (see
+`/api/schedule/compliance` above). The plan basis: PlannedTonnes =
+PlannedCycles × 220 t, and PlannedCycles × the scheduled route's target cycle
+time gives the truck's available minutes for the shift; dividing capacity by
+target cycle time gives a tonnes-per-minute rate that turns every minute bucket
+below into tonnes. A negative bucket means that truck-shift *gained* tonnes
+there, never floored to zero.
+
+- **Payload short**: Capacity minus actual payload, summed over the
+  truck-shift's cycles - tonnes left on the ground from under-filled buckets
+  (planted problem #1 shows up here for T07).
+- **Unplanned downtime**: Unplanned `Delays` minutes for that truck, clipped
+  to the shift window.
+- **Queue - loader delay**: The portion of each cycle's queue-over-target
+  minutes that overlaps a `LoaderDelays` window (handover or spike) at that
+  cycle's loader, capped to the cycle's own queue-over-target minutes.
+- **Queue - over-trucking**: The rest of queue-over-target - queueing that
+  isn't explained by a loader stoppage, i.e. more trucks arriving than the
+  loader can clear.
+- **Haul over target**: Actual haul minutes minus the route's target haul
+  minutes, summed over the truck-shift's cycles - where the waste-dump ramp
+  (planted problem #2) and the night effect (planted problem #7) show up.
+- **Load/dump/return over target**: The same idea for the other three phases,
+  combined into one bucket.
+- **Idle/unexplained**: What's left - available minutes minus the sum of
+  actual cycle minutes and unplanned downtime minutes. Absorbs cycles
+  overrunning the shift end, planned delays the scheduler already knew about,
+  and genuine idle time.
+
+The queue split is a documented simplification: it only counts a cycle's
+queue-over-target minutes as "loader delay" for the minutes that literally
+overlap a `LoaderDelays` window, so it slightly under-counts knock-on queue -
+the backlog that builds up just after a delay ends but before it clears -
+which lands in "over-trucking" instead.
+
 ## Scheduler
 
 Before every shift (06:00 Day, 18:00 Night, mine time), the scheduler builds
 one `Schedules` row per truck:
 
-- **Book rate.** Each route's book cycle time is computed from its distance
+- **Target rate.** Each route's target cycle time is computed from its distance
   and grade at full payload (220 t), using the same speed model as the
   simulator but without the waste-dump slow ramp and without any
   truck-specific noise (mean load 3.8 min, dump 1.2 min, queue 0.8 min).
@@ -553,7 +620,7 @@ one `Schedules` row per truck:
   Crusher route. No other logic. The resulting schedules are intentionally
   silly (many trucks stacked on one loader, long off-home hauls) so Project
   2 has something to optimise against.
-- **Plan.** PlannedCycles = available minutes / book cycle time; PlannedTonnes
+- **Plan.** PlannedCycles = available minutes / target cycle time; PlannedTonnes
   = PlannedCycles x 220.
 - Cycles always follow the truck's schedule for the shift they start in — no
   more random per-cycle loader/route picking. A truck that goes unavailable
@@ -566,13 +633,13 @@ one `Schedules` row per truck:
   never written anywhere (no row, no `Idles` table); the API reads them back
   as the residual between calendar, cycle, and delay time.
 
-**Targets** (book tonnes if 4 trucks ran each destination's home route for a
-full 720-minute shift, using the book rates above, which exclude the
-waste-dump slow ramp): ROM pad (L1, 3.2 km/6%, book cycle 19.3 min) ~32,800
-t/shift; Waste dump (L2, 4.8 km/8%, book cycle 28.3 min) ~22,400 t/shift;
-Crusher (L3, 2.1 km/5%, book cycle 14.3 min) ~44,400 t/shift. These live in
+**Targets** (target tonnes if 4 trucks ran each destination's home route for a
+full 720-minute shift, using the target rates above, which exclude the
+waste-dump slow ramp): ROM pad (L1, 3.2 km/6%, target cycle 19.3 min) ~32,800
+t/shift; Waste dump (L2, 4.8 km/8%, target cycle 28.3 min) ~22,400 t/shift;
+Crusher (L3, 2.1 km/5%, target cycle 14.3 min) ~44,400 t/shift. These live in
 code only (no `ShiftTargets` table) since they're a fixed function of the
-home routes' book rates.
+home routes' target rates.
 
 ## Optimiser
 
@@ -726,6 +793,11 @@ numbers.
    frequency (~60%/truck/day vs ~20%/truck/day), with the same repair-time
    distribution as everyone else - only the frequency is different. Tyre and
    Major breakdown are unaffected.
+7. **Night haul runs slow.** Loaded haul time is about 6% longer on the Night
+   shift than Day (start hour < 06:00 or >= 18:00, mine time), on top of any
+   waste-dump ramp - a code-only multiplier, like the ramp. The scheduler's
+   target time stays unaware of it, so it shows up as extra haul-over-target on
+   Night shifts in the shortfall attribution.
 
 Loader contention is now real: a loader serves one truck at a time, FIFO by
 arrival, so a truck's `QueueMin` is genuinely how long it waited (plus a
@@ -748,7 +820,7 @@ not as a current baseline:
 - Average payload: 95.4% of capacity fleet-wide; T07 alone averages 80.2%
   (planted problem #1, unchanged by this rewrite).
 - Waste dump haul time (haul phase only, isolating the ramp from
-  contention): 11.7% over book, versus -2.5% on Ore routes (planted problem
+  contention): 11.7% over target, versus -2.5% on Ore routes (planted problem
   #2, unchanged).
 - Average queue: 4.05 min outside the 06:00/18:00 hour, 7.06 min inside it
   (planted problem #3, now a loader-side handover rather than a random
@@ -1033,7 +1105,9 @@ yet" for every shift. Re-run `--optimise` (same command, same `HAUL_DB_CONN`)
 after every subsequent Azure data reload too, for the same reason. The run
 itself happens on your machine and takes about 25 minutes for 30 days of
 shifts; only the final write touches the database, so keep the temporary
-client IP rule in place until it finishes.
+client IP rule in place until it finishes. The full Azure reload (reset
+schema, load, `--optimise`) takes about an hour end to end, not just the
+25 minutes `--optimise` itself needs.
 
 ### 5. App Service
 

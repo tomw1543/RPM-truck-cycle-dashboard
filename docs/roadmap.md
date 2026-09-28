@@ -5,19 +5,15 @@ This file lists what comes after, so the shape of phase 1 leaves room for it.
 
 ## Diagnostics to add
 
-**Loader queue heatmap.** Hour of day by loader, coloured by average queue minutes.
-Spikes show as blocks. This is the only view that proves a spike happened at a
-particular loader at a particular hour, which route-level averages hide.
-
 **Shift comparison.** Day against Night for the same KPIs. Night shifts usually run
 fewer cycles. Showing the gap raises the question of why.
 
 **Plan compliance with shortfall attribution.** For each shift, split the gap between
 planned and actual tonnes into causes: trucks unavailable, payload short, cycle times
-over book, and shifts where the scheduler assigned trucks badly.
+over target, and shifts where the scheduler assigned trucks badly.
 
-**Route scorecard.** Actual cycle time against book time for each of the 9 routes, with
-the phase that explains the gap. The waste dump ramp shows up here.
+**Route scorecard.** Actual cycle time against target time for each of the 9 routes,
+with the phase that explains the gap. The waste dump ramp shows up here.
 
 **Payload distribution.** A histogram per truck against its capacity, with control
 limits. An average hides a truck that alternates between full and half loads.
@@ -43,7 +39,7 @@ loader-shift. Points in the top right mean too many trucks on that loader.
 
 ## Implementation work
 
-**New endpoints.** `GET /api/loaders/{id}/queue-series` (hourly), `GET /api/trucks/{id}/payload-distribution`,
+**New endpoints.** `GET /api/trucks/{id}/payload-distribution`,
 `GET /api/delays/pareto`, `GET /api/fuel`, `GET /api/shifts/compare`.
 
 **Optimiser endpoint (Project 2's hook).** `POST /api/schedule/optimise` takes a shift

@@ -144,7 +144,7 @@ export interface TruckWindowParams {
 export interface RoutePhase {
   averageMin: number | null
   benchmarkMin: number | null
-  bookMin: number
+  targetMin: number
 }
 
 /** RouteEndpoints.RoutePhasesData. */
@@ -157,8 +157,8 @@ export interface RoutePhases {
 }
 
 /** RouteEndpoints.RouteData. One row per route (all 9, including a route with zero cycles in
- * the window). vsBook is a fraction (averageCycleMin / bookCycleMin - 1), null with no cycles in
- * the window. benchmarkCycleMin is the route's all-time 25th-percentile total cycle time. */
+ * the window). vsTarget is a fraction (averageCycleMin / targetCycleMin - 1), null with no cycles
+ * in the window. benchmarkCycleMin is the route's all-time 25th-percentile total cycle time. */
 export interface RouteData {
   routeName: string
   loaderName: string
@@ -166,11 +166,11 @@ export interface RouteData {
   material: string
   distanceKm: number
   gradePercent: number
-  bookCycleMin: number
+  targetCycleMin: number
   cycles: number
   tonnes: number
   averageCycleMin: number | null
-  vsBook: number | null
+  vsTarget: number | null
   benchmarkCycleMin: number | null
   phases: RoutePhases
 }
@@ -194,7 +194,7 @@ export interface PhaseMinutes {
 
 /** BottleneckEndpoints.NamedAmountData - one route/truck/loader's share of recoverable minutes.
  * equivalentTonnes is null only if the calculator couldn't rate its route (shouldn't happen for
- * recoverable/over-book minutes, since those minutes come from window cycles that do have a
+ * recoverable/over-target minutes, since those minutes come from window cycles that do have a
  * route rate). */
 export interface NamedAmount {
   name: string
@@ -202,7 +202,7 @@ export interface NamedAmount {
   equivalentTonnes: number | null
 }
 
-/** BottleneckEndpoints.RoutePhaseMinutesData - one route's over-book (or recoverable-by-route)
+/** BottleneckEndpoints.RoutePhaseMinutesData - one route's over-target (or recoverable-by-route)
  * minutes with its own phase split. */
 export interface RoutePhaseMinutes {
   routeName: string
@@ -220,7 +220,7 @@ export interface RecoverableData {
   byLoader: NamedAmount[]
 }
 
-export interface OverBookData {
+export interface OverTargetData {
   totalMin: number
   totalEquivalentTonnes: number
   byPhase: PhaseMinutes
@@ -240,10 +240,10 @@ export interface UnderloadData {
   baselinePayloadPercent: number
 }
 
-/** BottleneckEndpoints.LossItemData. measure is one of "recoverable" | "overBook" | "underload" -
- * the three measures overlap and must never be added together. nativeUnit is "min" or "t". */
+/** BottleneckEndpoints.LossItemData. measure is one of "overTarget" | "underload" -
+ * the two measures overlap and must never be added together. nativeUnit is "min" or "t". */
 export interface LossItem {
-  measure: 'recoverable' | 'overBook' | 'underload'
+  measure: 'overTarget' | 'underload'
   subject: string
   phase: string | null
   nativeAmount: number
@@ -251,33 +251,12 @@ export interface LossItem {
   equivalentTonnes: number
 }
 
-export interface HotspotRow {
-  loaderName: string
-  dateHour: string
-  excessMin: number
-  cycles: number
-  averageQueueMin: number
-}
-
-export interface ProfileCell {
-  loaderName: string
-  hourOfDay: number
-  excessMin: number
-  cycles: number
-}
-
-export interface HotspotsData {
-  top: HotspotRow[]
-  profile: ProfileCell[]
-}
-
 /** BottleneckEndpoints.BottlenecksData - GET /api/bottlenecks. */
 export interface BottlenecksData {
   recoverable: RecoverableData
-  overBook: OverBookData
+  overTarget: OverTargetData
   underload: UnderloadData
   biggestLosses: LossItem[]
-  hotspots: HotspotsData
 }
 
 /** ScheduleEndpoints.ReasonCountData - one unavailability reason's count within a shift. */
@@ -286,10 +265,26 @@ export interface ReasonCount {
   count: number
 }
 
+/** ShortfallAttributionCalculator.Buckets, mirrored as ScheduleEndpoints.ShortfallBucketsData.
+ * Signed tonnes: a negative bucket means the truck/shift GAINED tonnes there (e.g. loading
+ * faster than target), never floored to zero. Buckets sum exactly (to rounding) to the gap they
+ * decompose. otherOverTarget groups load/dump/return over target together; haulOverTarget is kept
+ * separate since that's where the waste dump ramp and the night effect show. */
+export interface ShortfallBuckets {
+  payloadShort: number
+  unplannedDowntime: number
+  queueLoaderDelay: number
+  queueOverTrucking: number
+  haulOverTarget: number
+  otherOverTarget: number
+  residual: number
+}
+
 /** ScheduleEndpoints.TruckComplianceData - one truck's plan vs actual for one shift.
  * unavailableReason set (and routeName/plannedTonnes null) when the truck had no schedule that
  * shift; belowTypical is only ever true on a complete shift. percentOfPlan/averagePayloadPercent
- * follow the same conventions as elsewhere (0-1 fraction, 0-100 scale respectively). */
+ * follow the same conventions as elsewhere (0-1 fraction, 0-100 scale respectively). shortfall is
+ * null when the truck had no plan that shift (unavailable). */
 export interface TruckCompliance {
   truckName: string
   routeName: string | null
@@ -302,10 +297,12 @@ export interface TruckCompliance {
   percentOfPlan: number | null
   averagePayloadPercent: number | null
   belowTypical: boolean
+  shortfall: ShortfallBuckets | null
 }
 
 /** ScheduleEndpoints.ShiftComplianceData - one shift's fleet-wide plan vs actual, plus its
- * per-truck breakdown. belowTypical only applies to complete shifts. */
+ * per-truck breakdown. belowTypical only applies to complete shifts. shortfall is null when no
+ * truck in the shift had a plan. */
 export interface ShiftCompliance {
   shiftDate: string
   shiftName: string
@@ -319,6 +316,7 @@ export interface ShiftCompliance {
   unavailableCount: number
   unavailableReasons: ReasonCount[]
   trucks: TruckCompliance[]
+  shortfall: ShortfallBuckets | null
 }
 
 /** ScheduleEndpoints.ShiftSummaryData - one shift referenced from the summary (best/worst). */
@@ -331,6 +329,12 @@ export interface ShiftSummaryRef {
 /** ScheduleEndpoints.ComplianceSummaryData - complete-shift totals for the window. baseline is
  * the tonnes-weighted percent of plan across complete shifts, identical to
  * /api/fleet/summary's planVsActual.percentOfPlan for the same window. */
+export interface WindowShortfall {
+  gap: number
+  buckets: ShortfallBuckets
+  shiftCount: number
+}
+
 export interface ComplianceSummary {
   plannedTonnes: number | null
   actualTonnes: number
@@ -341,6 +345,7 @@ export interface ComplianceSummary {
   shiftCount: number
   best: ShiftSummaryRef | null
   worst: ShiftSummaryRef | null
+  shortfall: WindowShortfall | null
 }
 
 /** ScheduleEndpoints.ScheduleComplianceData - GET /api/schedule/compliance. Shifts are ordered
@@ -469,4 +474,36 @@ export interface OptimiserShiftDetailData {
   moreOutput: OptimiserPlan
   leaner: OptimiserPlan
   actual: ActualShiftOutcome
+}
+
+/** LoaderEndpoints.LoaderShiftData - one loader's stats for one shift. utilisation is a 0-1
+ * fraction; matchFactor is a plain ratio (0 with no cycles at that loader that shift). Same
+ * definitions as OptimisedLoaderStats/OptimiserLoaderStat, so this page and the optimiser's
+ * before/after loader table agree. */
+export interface LoaderShift {
+  shiftDate: string
+  shiftName: string
+  isComplete: boolean
+  loaderName: string
+  trucks: number
+  avgQueueMin: number
+  loadingMin: number
+  stoppedMin: number
+  utilisation: number
+  matchFactor: number
+}
+
+/** LoaderEndpoints.LoaderSummaryData - one loader's window-average figures, over complete
+ * shifts only. */
+export interface LoaderSummary {
+  loaderName: string
+  avgUtilisation: number
+  avgQueueMin: number
+  avgMatchFactor: number
+}
+
+/** LoaderEndpoints.LoadersData - GET /api/loaders. shifts is newest first. */
+export interface LoadersData {
+  shifts: LoaderShift[]
+  summary: LoaderSummary[]
 }

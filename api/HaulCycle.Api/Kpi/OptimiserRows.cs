@@ -49,10 +49,10 @@ public sealed record OptimisedLoaderStatRow(
 
 /// <summary>One route's loader/destination/distance, for MoveReasonCalculator's route-length
 /// clause - kept as a plain Kpi-layer row (rather than reusing Data.RouteInfo) so the calculator
-/// stays free of DB types, same convention as RouteBookRow in Rows.cs.</summary>
+/// stays free of DB types, same convention as RouteTargetRow in Rows.cs.</summary>
 public sealed record RouteReferenceRow(
     string RouteName,
     string LoaderName,
     string DestinationName,
     decimal DistanceKm,
-    decimal BookCycleMin);
+    decimal TargetCycleMin);

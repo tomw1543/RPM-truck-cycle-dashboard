@@ -4,6 +4,11 @@ namespace HaulCycle.Api.Kpi;
 /// ShiftDate; a Night shift (18:00-05:59) ends at 06:00 the following day.</summary>
 internal static class ShiftWindow
 {
+    public static DateTime Start(DateOnly shiftDate, string shiftName) =>
+        shiftName == "Day"
+            ? shiftDate.ToDateTime(TimeOnly.MinValue).AddHours(6)
+            : shiftDate.ToDateTime(TimeOnly.MinValue).AddHours(18);
+
     public static DateTime End(DateOnly shiftDate, string shiftName) =>
         shiftName == "Day"
             ? shiftDate.ToDateTime(TimeOnly.MinValue).AddHours(18)

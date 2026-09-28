@@ -33,17 +33,26 @@ public sealed record DelayRow(
     string Reason,
     bool IsPlanned);
 
-/// <summary>One route's book-rate phase breakdown (dbo.Routes), for MinutesOverBookCalculator -
-/// kept as a plain Kpi-layer row (rather than reusing Data.RouteInfo) so the calculator stays
-/// free of DB types, same as CycleRow/DelayRow/ScheduleRow.</summary>
-public sealed record RouteBookRow(
+/// <summary>One route's target-rate phase breakdown (dbo.Routes, aliased BookCycleMin AS
+/// TargetCycleMin in SQL), for MinutesOverTargetCalculator - kept as a plain Kpi-layer row
+/// (rather than reusing Data.RouteInfo) so the calculator stays free of DB types, same as
+/// CycleRow/DelayRow/ScheduleRow.</summary>
+public sealed record RouteTargetRow(
     string RouteName,
-    decimal BookCycleMin,
-    decimal BookQueueMin,
-    decimal BookLoadMin,
-    decimal BookHaulMin,
-    decimal BookDumpMin,
-    decimal BookReturnMin);
+    decimal TargetCycleMin,
+    decimal TargetQueueMin,
+    decimal TargetLoadMin,
+    decimal TargetHaulMin,
+    decimal TargetDumpMin,
+    decimal TargetReturnMin);
+
+/// <summary>One row from vw_LoaderDelayDetail: a period a loader was stopped (handover,
+/// RateFactor 0.00) or slowed (spike, RateFactor 0.50).</summary>
+public sealed record LoaderDelayRow(
+    string LoaderName,
+    DateTime StartTime,
+    DateTime EndTime,
+    decimal RateFactor);
 
 /// <summary>One row from vw_ScheduleDetail. Route/Loader/Destination/plan fields are
 /// null when the truck was unavailable for the shift.</summary>

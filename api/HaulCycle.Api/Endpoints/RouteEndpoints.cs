@@ -5,7 +5,7 @@ namespace HaulCycle.Api.Endpoints;
 
 /// <summary>One phase's window average alongside its all-time benchmark (see
 /// RouteBenchmarkCalculator).</summary>
-public sealed record RoutePhaseData(decimal? AverageMin, decimal? BenchmarkMin, decimal BookMin);
+public sealed record RoutePhaseData(decimal? AverageMin, decimal? BenchmarkMin, decimal TargetMin);
 
 public sealed record RoutePhasesData(
     RoutePhaseData Queue,
@@ -15,9 +15,9 @@ public sealed record RoutePhasesData(
     RoutePhaseData Return);
 
 /// <summary>One row per route (all 9, including routes with zero cycles in the window).
-/// vsBook is a fraction (averageCycleMin / bookCycleMin - 1); null when the route had no cycles
-/// in the window. benchmarkCycleMin is the route's all-time 25th-percentile total cycle time,
-/// independent of the requested window.</summary>
+/// vsTarget is a fraction (averageCycleMin / targetCycleMin - 1); null when the route had no
+/// cycles in the window. benchmarkCycleMin is the route's all-time 25th-percentile total cycle
+/// time, independent of the requested window.</summary>
 public sealed record RouteData(
     string RouteName,
     string LoaderName,
@@ -25,11 +25,11 @@ public sealed record RouteData(
     string Material,
     decimal DistanceKm,
     decimal GradePercent,
-    decimal BookCycleMin,
+    decimal TargetCycleMin,
     int Cycles,
     decimal Tonnes,
     decimal? AverageCycleMin,
-    decimal? VsBook,
+    decimal? VsTarget,
     decimal? BenchmarkCycleMin,
     RoutePhasesData Phases);
 
@@ -76,7 +76,7 @@ public static class RouteEndpoints
             return Results.Ok(new Envelope<RoutesListData>(meta.AsOf, fromDate, toDate, new RoutesListData(routes)));
         })
         .WithName("GetRoutes")
-        .WithSummary("Per-route actual vs book/benchmark cycle time, for a date window.");
+        .WithSummary("Per-route actual vs target/benchmark cycle time, for a date window.");
     }
 
     private static RouteData BuildRouteRow(
@@ -87,8 +87,8 @@ public static class RouteEndpoints
         var cycleTime = CycleTimeCalculator.Calculate(cycles);
         var tonnes = cycles.Sum(c => c.PayloadTonnes);
 
-        decimal? vsBook = cycleTime.AverageCycleMin.HasValue && route.BookCycleMin != 0
-            ? cycleTime.AverageCycleMin.Value / route.BookCycleMin - 1m
+        decimal? vsTarget = cycleTime.AverageCycleMin.HasValue && route.TargetCycleMin != 0
+            ? cycleTime.AverageCycleMin.Value / route.TargetCycleMin - 1m
             : null;
 
         benchmarks.TryGetValue(route.RouteName, out var benchmark);
@@ -103,18 +103,18 @@ public static class RouteEndpoints
             route.Material,
             route.DistanceKm,
             route.GradePercent,
-            route.BookCycleMin,
+            route.TargetCycleMin,
             cycles.Count,
             tonnes,
             cycleTime.AverageCycleMin,
-            vsBook,
+            vsTarget,
             benchmark?.TotalCycleMin,
             new RoutePhasesData(
-                new RoutePhaseData(averages.Queue, phases?.QueueMin, route.BookQueueMin),
-                new RoutePhaseData(averages.Load, phases?.LoadMin, route.BookLoadMin),
-                new RoutePhaseData(averages.Haul, phases?.HaulMin, route.BookHaulMin),
-                new RoutePhaseData(averages.Dump, phases?.DumpMin, route.BookDumpMin),
-                new RoutePhaseData(averages.Return, phases?.ReturnMin, route.BookReturnMin)));
+                new RoutePhaseData(averages.Queue, phases?.QueueMin, route.TargetQueueMin),
+                new RoutePhaseData(averages.Load, phases?.LoadMin, route.TargetLoadMin),
+                new RoutePhaseData(averages.Haul, phases?.HaulMin, route.TargetHaulMin),
+                new RoutePhaseData(averages.Dump, phases?.DumpMin, route.TargetDumpMin),
+                new RoutePhaseData(averages.Return, phases?.ReturnMin, route.TargetReturnMin)));
     }
 
     private static (decimal? Queue, decimal? Load, decimal? Haul, decimal? Dump, decimal? Return) PhaseAverages(

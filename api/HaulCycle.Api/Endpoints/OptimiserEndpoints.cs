@@ -107,7 +107,7 @@ public static class OptimiserEndpoints
             var actual = ActualShiftOutcomeCalculator.Calculate(actualCycles);
             var meta = await queries.GetMetaAsync(ct);
             var routes = (await queries.GetRoutesAsync(ct))
-                .Select(r => new RouteReferenceRow(r.RouteName, r.LoaderName, r.DestinationName, r.DistanceKm, r.BookCycleMin))
+                .Select(r => new RouteReferenceRow(r.RouteName, r.LoaderName, r.DestinationName, r.DistanceKm, r.TargetCycleMin))
                 .ToList();
 
             var originalPlan = plans.First(p => p.PlanType == "Original");

@@ -1,6 +1,6 @@
 namespace HaulCycle.Api.Kpi;
 
-/// <summary>Converts recoverable/over-book minutes into "equivalent tonnes": the tonnes that
+/// <summary>Converts recoverable/over-target minutes into "equivalent tonnes": the tonnes that
 /// minute figure would move if it became hauling time, at that route's own rate (route window
 /// tonnes / route window cycle minutes, i.e. tonnes per minute observed on the route in the
 /// requested window). A route with no window cycles has no rate (null), so minutes on that

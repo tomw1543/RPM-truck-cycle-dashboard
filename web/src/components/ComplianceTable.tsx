@@ -1,7 +1,23 @@
 import { Fragment, useState } from 'react'
 import { Link } from 'react-router'
-import type { ShiftCompliance, TruckCompliance } from '../api/types'
-import { fmtInt, fmtNumber, fmtPercentFraction, fmtTonnes } from '../lib/format'
+import type { ShiftCompliance, ShortfallBuckets, TruckCompliance } from '../api/types'
+import { fmtInt, fmtNumber, fmtPercentFraction, fmtSignedTonnes, fmtTonnes } from '../lib/format'
+
+const BUCKET_LABELS: { key: keyof ShortfallBuckets; label: string }[] = [
+  { key: 'payloadShort', label: 'Payload short' },
+  { key: 'unplannedDowntime', label: 'Unplanned downtime' },
+  { key: 'queueLoaderDelay', label: 'Queue - loader delay' },
+  { key: 'queueOverTrucking', label: 'Queue - over-trucking' },
+  { key: 'haulOverTarget', label: 'Haul over target' },
+  { key: 'otherOverTarget', label: 'Load/dump/return over target' },
+  { key: 'residual', label: 'Idle / unexplained' },
+]
+
+/** Plain-text summary of a shortfall's buckets, for a native title tooltip and the expanded
+ * shift breakdown line - a full chart per row would be too heavy for a table this dense. */
+function shortfallSummary(buckets: ShortfallBuckets): string {
+  return BUCKET_LABELS.map(({ key, label }) => `${label}: ${fmtSignedTonnes(buckets[key])}${buckets[key] < 0 ? ' (gained)' : ''}`).join(' | ')
+}
 
 interface ComplianceTableProps {
   shifts: ShiftCompliance[]
@@ -43,6 +59,12 @@ function TruckRow({ truck, windowQuery }: { truck: TruckCompliance; windowQuery:
         {fmtInt(truck.actualCycles)} / {fmtInt(truck.plannedCycles)}
       </td>
       <td className="px-3 py-1.5 text-right tabular-nums text-slate-400">{fmtNumber(truck.averagePayloadPercent, 0)}</td>
+      <td
+        className="px-3 py-1.5 text-right tabular-nums text-slate-400"
+        title={truck.shortfall ? shortfallSummary(truck.shortfall) : undefined}
+      >
+        {truck.shortfall ? fmtTonnes(truck.plannedTonnes !== null ? truck.plannedTonnes - truck.actualTonnes : null) : '—'}
+      </td>
     </tr>
   )
 }
@@ -139,6 +161,12 @@ export function ComplianceTable({ shifts, windowQuery }: ComplianceTableProps) {
                   {isExpanded && (
                     <tr id={panelId} className="border-b border-slate-800/60">
                       <td colSpan={7} className="p-0">
+                        {shift.shortfall && (
+                          <p className="border-b border-slate-800/40 bg-slate-950/40 px-3 pl-8 py-1.5 text-xs text-slate-500">
+                            Shortfall (gap {fmtTonnes(shift.plannedTonnes !== null ? shift.plannedTonnes - shift.actualTonnes : null)}):{' '}
+                            {shortfallSummary(shift.shortfall)}
+                          </p>
+                        )}
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="border-b border-slate-800/60 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -149,6 +177,9 @@ export function ComplianceTable({ shifts, windowQuery }: ComplianceTableProps) {
                               <th className="px-3 py-1.5 text-right font-medium">% of plan</th>
                               <th className="px-3 py-1.5 text-right font-medium">Cycles (actual / planned)</th>
                               <th className="px-3 py-1.5 text-right font-medium">Avg payload %</th>
+                              <th className="px-3 py-1.5 text-right font-medium" title="Planned minus actual tonnes; hover a value for the bucket breakdown">
+                                Gap
+                              </th>
                             </tr>
                           </thead>
                           <tbody>

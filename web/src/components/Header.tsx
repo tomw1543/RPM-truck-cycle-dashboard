@@ -36,6 +36,9 @@ export function Header({ asOf, live, onLiveChange }: HeaderProps) {
           <NavLink to="/schedule" className={navLinkClass}>
             Schedule
           </NavLink>
+          <NavLink to="/loaders" className={navLinkClass}>
+            Loaders
+          </NavLink>
           <NavLink to="/optimiser" className={navLinkClass}>
             Optimiser
           </NavLink>

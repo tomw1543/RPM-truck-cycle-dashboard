@@ -1,9 +1,7 @@
 import { useMeta, useBottlenecks } from '../api/hooks'
 import { ApiError } from '../api/client'
 import { BiggestLossesTable } from '../components/BiggestLossesTable'
-import { OverBookTable } from '../components/OverBookTable'
-import { QueueHotspots } from '../components/QueueHotspots'
-import { RecoverablePanel } from '../components/RecoverablePanel'
+import { OverTargetTable } from '../components/OverTargetTable'
 import { StatusBanner } from '../components/StatusBanner'
 import { UnderloadTable } from '../components/UnderloadTable'
 import { WindowBar } from '../components/WindowBar'
@@ -46,10 +44,8 @@ export function Losses({ live }: LossesProps) {
         ) : (
           <>
             <BiggestLossesTable items={bottlenecks.data.data.biggestLosses} windowQuery={windowQuery} />
-            <RecoverablePanel data={bottlenecks.data.data.recoverable} windowQuery={windowQuery} />
-            <OverBookTable data={bottlenecks.data.data.overBook} />
+            <OverTargetTable data={bottlenecks.data.data.overTarget} />
             <UnderloadTable data={bottlenecks.data.data.underload} windowQuery={windowQuery} />
-            <QueueHotspots data={bottlenecks.data.data.hotspots} />
           </>
         ))}
     </div>

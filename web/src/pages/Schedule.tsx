@@ -3,6 +3,7 @@ import { ApiError } from '../api/client'
 import { ComplianceSummaryTiles } from '../components/ComplianceSummaryTiles'
 import { ComplianceTable } from '../components/ComplianceTable'
 import { ScheduleChart } from '../components/ScheduleChart'
+import { ShortfallWaterfall } from '../components/ShortfallWaterfall'
 import { StatusBanner } from '../components/StatusBanner'
 import { WindowBar } from '../components/WindowBar'
 import { useWindowState } from '../components/useWindowState'
@@ -32,7 +33,7 @@ export function Schedule({ live }: ScheduleProps) {
       <WindowBar state={windowState} onChange={setWindowState} bounds={bounds} />
 
       <p className="text-xs text-slate-500">
-        Plans use book rates (full payload, minimal queue), so actual tonnes typically run below
+        Plans use target rates (full payload, minimal queue), so actual tonnes typically run below
         plan{baseline !== null ? `: ${fmtPercentFraction(baseline)} over this window.` : '.'}
       </p>
 
@@ -53,6 +54,12 @@ export function Schedule({ live }: ScheduleProps) {
           <>
             <ComplianceSummaryTiles summary={compliance.data.data.summary} />
             <ScheduleChart shifts={compliance.data.data.shifts} />
+            {compliance.data.data.summary.shortfall && (
+              <ShortfallWaterfall
+                gap={compliance.data.data.summary.shortfall.gap}
+                buckets={compliance.data.data.summary.shortfall.buckets}
+              />
+            )}
             <ComplianceTable shifts={compliance.data.data.shifts} windowQuery={windowQuery} />
           </>
         ))}

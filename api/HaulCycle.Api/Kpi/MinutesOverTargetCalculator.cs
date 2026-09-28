@@ -1,12 +1,12 @@
 namespace HaulCycle.Api.Kpi;
 
-/// <summary>Minutes over book (see CONTEXT.md): per cycle, gap = max(0, TotalCycleMin - route's
-/// BookCycleMin), attributed across phases against the route's per-phase book minutes. Catches
+/// <summary>Minutes over target (see CONTEXT.md): per cycle, gap = max(0, TotalCycleMin - route's
+/// TargetCycleMin), attributed across phases against the route's per-phase target minutes. Catches
 /// slowness that affects every cycle on a route (which the P25 benchmark absorbs and so misses -
 /// see RecoverableMinutesCalculator). Never added to recoverable minutes; the two overlap.
 /// Aggregates: total, by phase (+ Unattributed), and by route (each with its own phase split and
 /// equivalent tonnes at that route's own rate).</summary>
-public static class MinutesOverBookCalculator
+public static class MinutesOverTargetCalculator
 {
     public sealed record RoutePhaseMinutes(string RouteName, decimal TotalMin, decimal? EquivalentTonnes, PhaseAttributionCalculator.PhaseAmounts Phases);
 
@@ -18,7 +18,7 @@ public static class MinutesOverBookCalculator
 
     public static Result Calculate(
         IReadOnlyCollection<CycleRow> windowCycles,
-        IReadOnlyDictionary<string, RouteBookRow> routesByName,
+        IReadOnlyDictionary<string, RouteTargetRow> routesByName,
         IReadOnlyDictionary<string, decimal> ratesByRoute)
     {
         decimal totalMin = 0m;
@@ -32,13 +32,13 @@ public static class MinutesOverBookCalculator
             if (!routesByName.TryGetValue(c.RouteName, out var route))
                 continue;
 
-            var gap = Math.Max(0m, c.TotalCycleMin - route.BookCycleMin);
+            var gap = Math.Max(0m, c.TotalCycleMin - route.TargetCycleMin);
             if (gap <= 0m)
                 continue;
 
             var amounts = PhaseAttributionCalculator.Attribute(
                 gap, c.QueueMin, c.LoadMin, c.HaulMin, c.DumpMin, c.ReturnMin,
-                route.BookQueueMin, route.BookLoadMin, route.BookHaulMin, route.BookDumpMin, route.BookReturnMin);
+                route.TargetQueueMin, route.TargetLoadMin, route.TargetHaulMin, route.TargetDumpMin, route.TargetReturnMin);
 
             var equivalentTonnes = EquivalentTonnesCalculator.Convert(gap, c.RouteName, ratesByRoute) ?? 0m;
 

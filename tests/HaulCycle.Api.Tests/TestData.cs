@@ -39,6 +39,9 @@ internal static class TestData
     public static DelayRow Delay(string truck, DateTime start, DateTime end, string reason = "Breakdown", bool isPlanned = false) =>
         new(truck, start, end, reason, isPlanned);
 
+    public static LoaderDelayRow LoaderDelay(string loader, DateTime start, DateTime end, decimal rateFactor = 0.00m) =>
+        new(loader, start, end, rateFactor);
+
     public static OptimisedPlanRow OptimisedPlan(
         string planType,
         DateOnly? shiftDate = null,
@@ -90,8 +93,8 @@ internal static class TestData
         string loaderName,
         string destinationName,
         decimal distanceKm,
-        decimal bookCycleMin = 20m) =>
-        new(routeName, loaderName, destinationName, distanceKm, bookCycleMin);
+        decimal targetCycleMin = 20m) =>
+        new(routeName, loaderName, destinationName, distanceKm, targetCycleMin);
 
     public static ScheduleRow Schedule(
         string truck,

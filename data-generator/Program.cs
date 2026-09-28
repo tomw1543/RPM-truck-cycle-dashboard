@@ -1702,7 +1702,14 @@ class Simulator
         // speed model predicts (a slow ramp, code-only - not stored per-route in the DB).
         var slowFactor = route.DestinationId == Fleet.WasteDumpDestinationId ? 1.15 : 1.00;
 
-        var haulMin = route.DistanceKm / loadedSpeedKmh * 60 * slowFactor * grossWeightRatio * Math.Max(0.8, Normal(rng, 1, 0.06));
+        // Planted problem #7: loaded haul runs ~6% slower on the Night shift (start hour < 6
+        // or >= 18, mine time) than Day - code-only, like the waste dump ramp above, and the
+        // Scheduler/book time stay unaware of it. No rng draw added - haulMin's existing noise
+        // factor is simply multiplied by one more constant.
+        var isNight = start.Hour < 6 || start.Hour >= 18;
+        var nightFactor = isNight ? 1.06 : 1.00;
+
+        var haulMin = route.DistanceKm / loadedSpeedKmh * 60 * slowFactor * nightFactor * grossWeightRatio * Math.Max(0.8, Normal(rng, 1, 0.06));
         var returnMin = route.DistanceKm / emptySpeedKmh * 60 * Math.Max(0.8, Normal(rng, 1, 0.06));
 
         // Loader contention: the truck joins this loader's FIFO queue. loadStartRaw is the

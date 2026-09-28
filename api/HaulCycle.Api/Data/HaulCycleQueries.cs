@@ -11,7 +11,8 @@ public sealed record FleetCounts(int Trucks, int Loaders, int Routes, int Destin
 public sealed record TruckInfo(string Name, decimal CapacityTonnes);
 
 /// <summary>One row of route reference data (all 9 routes, regardless of whether they have any
-/// cycles in a given window).</summary>
+/// cycles in a given window). DB columns are BookCycleMin etc.; they are aliased to TargetCycleMin
+/// in the SQL query so Dapper maps them onto these properties.</summary>
 public sealed record RouteInfo(
     string RouteName,
     string LoaderName,
@@ -19,12 +20,12 @@ public sealed record RouteInfo(
     string Material,
     decimal DistanceKm,
     decimal GradePercent,
-    decimal BookCycleMin,
-    decimal BookQueueMin,
-    decimal BookLoadMin,
-    decimal BookHaulMin,
-    decimal BookDumpMin,
-    decimal BookReturnMin);
+    decimal TargetCycleMin,
+    decimal TargetQueueMin,
+    decimal TargetLoadMin,
+    decimal TargetHaulMin,
+    decimal TargetDumpMin,
+    decimal TargetReturnMin);
 
 public sealed record MetaInfo(DateTime? AsOf, DateOnly? FirstDate, DateOnly? LastDate, FleetCounts Counts);
 
@@ -91,16 +92,22 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
         return rows.AsList();
     }
 
-    /// <summary>All 9 routes, with reference fields and their book cycle time. Ordered by name so
-    /// callers get a stable order regardless of RouteId.</summary>
+    /// <summary>All 9 routes, with reference fields and their target cycle time (DB column
+    /// BookCycleMin, aliased to TargetCycleMin). Ordered by name so callers get a stable order
+    /// regardless of RouteId.</summary>
     public async Task<IReadOnlyList<RouteInfo>> GetRoutesAsync(CancellationToken ct = default)
     {
         using var conn = connectionFactory.CreateConnection();
         const string sql = """
             SELECT
                 r.Name AS RouteName, l.Name AS LoaderName, d.Name AS DestinationName, d.Material,
-                r.DistanceKm, r.GradePercent, r.BookCycleMin,
-                r.BookQueueMin, r.BookLoadMin, r.BookHaulMin, r.BookDumpMin, r.BookReturnMin
+                r.DistanceKm, r.GradePercent,
+                r.BookCycleMin  AS TargetCycleMin,
+                r.BookQueueMin  AS TargetQueueMin,
+                r.BookLoadMin   AS TargetLoadMin,
+                r.BookHaulMin   AS TargetHaulMin,
+                r.BookDumpMin   AS TargetDumpMin,
+                r.BookReturnMin AS TargetReturnMin
             FROM dbo.Routes r
             JOIN dbo.Loaders l ON l.LoaderId = r.LoaderId
             JOIN dbo.Destinations d ON d.DestinationId = r.DestinationId
@@ -167,6 +174,30 @@ public sealed class HaulCycleQueries(IDbConnectionFactory connectionFactory)
             sql,
             new { FromDate = fromDate.ToDateTime(TimeOnly.MinValue), ToDate = toDate.ToDateTime(TimeOnly.MinValue), Shift = shift },
             cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>Every loader's name, ordered - for callers building one row per loader per shift
+    /// even when a loader had no cycles or delays in the window.</summary>
+    public async Task<IReadOnlyList<string>> GetLoaderNamesAsync(CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = "SELECT Name FROM dbo.Loaders ORDER BY Name;";
+        var rows = await conn.QueryAsync<string>(new CommandDefinition(sql, cancellationToken: ct));
+        return rows.AsList();
+    }
+
+    /// <summary>LoaderDelays (handovers and spikes) overlapping [from, to) - for the shortfall
+    /// attribution queue split and /api/loaders' stopped-minutes figure.</summary>
+    public async Task<IReadOnlyList<LoaderDelayRow>> GetLoaderDelaysAsync(DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        using var conn = connectionFactory.CreateConnection();
+        const string sql = """
+            SELECT LoaderName, StartTime, EndTime, RateFactor
+            FROM dbo.vw_LoaderDelayDetail
+            WHERE StartTime < @To AND EndTime > @From;
+            """;
+        var rows = await conn.QueryAsync<LoaderDelayRow>(new CommandDefinition(sql, new { From = from, To = to }, cancellationToken: ct));
         return rows.AsList();
     }
 

@@ -8,8 +8,7 @@ interface BiggestLossesTableProps {
 }
 
 const MEASURE_LABEL: Record<LossItem['measure'], string> = {
-  recoverable: 'Recoverable',
-  overBook: 'Over book',
+  overTarget: 'Over target',
   underload: 'Underload',
 }
 
@@ -27,7 +26,7 @@ export function BiggestLossesTable({ items, windowQuery }: BiggestLossesTablePro
     <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/60">
       <h2 className="px-3 pt-3 text-sm font-semibold text-slate-200">Biggest losses</h2>
       <p className="px-3 pb-2 text-xs text-slate-400">
-        The ten largest loss items across three measures that overlap and must not be added together. Equivalent
+        The ten largest loss items across two measures that overlap and must not be added together. Equivalent
         tonnes assume the saved time becomes hauling, at that route&apos;s own tonnes-per-minute rate in this window.
       </p>
       {items.length === 0 ? (

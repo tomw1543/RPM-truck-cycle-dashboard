@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { ApiError, apiGet } from './client'
-import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, Meta, OptimiserShiftDetailData, OptimiserSummaryData, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
+import type { BottlenecksData, Envelope, FleetSummary, FleetSummaryParams, LoadersData, Meta, OptimiserShiftDetailData, OptimiserSummaryData, RoutesListData, ScheduleComplianceData, TruckDetailData, TrucksListData, TruckWindowParams } from './types'
 
 /** Matches the server's 30s output-cache policy on /api/meta and /api/fleet/summary
  * (DataEndpoints in Program.cs) - polling faster wouldn't see fresher data anyway. */
@@ -80,6 +80,19 @@ export function useScheduleCompliance(params: TruckWindowParams, live: boolean) 
     queryKey: ['schedule-compliance', params],
     queryFn: () =>
       apiGet<Envelope<ScheduleComplianceData>>('/api/schedule/compliance', {
+        from: params.from,
+        to: params.to,
+        shift: params.shift,
+      }),
+    refetchInterval: live ? LIVE_REFETCH_MS : false,
+  })
+}
+
+export function useLoaders(params: TruckWindowParams, live: boolean) {
+  return useQuery({
+    queryKey: ['loaders', params],
+    queryFn: () =>
+      apiGet<Envelope<LoadersData>>('/api/loaders', {
         from: params.from,
         to: params.to,
         shift: params.shift,
